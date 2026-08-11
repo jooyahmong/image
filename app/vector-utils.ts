@@ -238,7 +238,7 @@ function removeTinyComponents(width: number, height: number, source: Uint8Array,
     none: 0,
     light: Math.max(3, Math.round(totalPixels * .000003)),
     medium: Math.max(12, Math.round(totalPixels * .000015)),
-    strong: Math.max(48, Math.round(totalPixels * .00006)),
+    strong: Math.max(96, Math.round(totalPixels * .0001)),
   }[cleanup];
   if (!minimumArea) return source.slice();
 
@@ -463,7 +463,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .25, maximumDimension: 1400 },
     light: { pathOmit: 8, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
     medium: { pathOmit: 24, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
-    strong: { pathOmit: 64, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
+    strong: { pathOmit: 96, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -707,7 +707,7 @@ export function highlightSvg(svg: string, selected: number[]) {
     const active = chosen.has(Number(rawIndex));
     return `<g${attrs} data-highlighted="${active ? "true" : "false"}">`;
   });
-  const selectionStyle = `<style>.vector-base-layer{opacity:0}.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
+  const selectionStyle = `<style>.vector-base-layer{opacity:0!important;filter:none!important}.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
   return highlighted.replace(/<svg\b([^>]*)>/, `<svg$1>${selectionStyle}`);
 }
 

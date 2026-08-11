@@ -374,7 +374,7 @@ export default function Home() {
   }, [result]);
 
   const autoCropBounds = useMemo(() => result ? getVisibleBounds(result) : null, [result]);
-  const separateObjects = useMemo(() => result ? getSeparateObjectBounds(result) : [], [result]);
+  const separateObjects = useMemo(() => result && cropOpen ? getSeparateObjectBounds(result) : [], [cropOpen, result]);
   const hasTransparentTrim = useMemo(() => !!result && !!autoCropBounds && (
     autoCropBounds.x > 0 || autoCropBounds.y > 0 ||
     autoCropBounds.x + autoCropBounds.width < result.width ||
