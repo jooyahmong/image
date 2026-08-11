@@ -179,6 +179,15 @@ function colorDistance(r: number, g: number, b: number, candidate: { r: number; 
   return (2 + redMean / 256) * red * red + 4 * green * green + (2 + (255 - redMean) / 256) * blue * blue;
 }
 
+function isProtectedColorContrast(first?: { r: number; g: number; b: number }, second?: { r: number; g: number; b: number }) {
+  if (!first || !second) return false;
+  // Small features such as dark eyes and deliberate outline accents survive
+  // Ultra cleanup. Intermediate antialiasing shades remain below this cutoff
+  // and can be absorbed into the neighboring large color mass.
+  const protectedDistance = 230;
+  return colorDistance(first.r, first.g, first.b, second) >= protectedDistance * protectedDistance;
+}
+
 export function renderPalette(
   width: number,
   height: number,
@@ -203,7 +212,13 @@ export function renderPalette(
   return output;
 }
 
-function smoothIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+function smoothIndexedMap(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  cleanup: CleanupLevel,
+  palette: PaletteColor[],
+) {
   const radii = {
     none: [] as number[],
     light: [1],
@@ -235,8 +250,13 @@ function smoothIndexedMap(width: number, height: number, source: Uint8Array, cle
           }
         }
         const currentCount = counts.get(current[offset]) ?? 0;
+        const protectsDistinctDetail = cleanup === "strong" &&
+          current[offset] !== TRANSPARENT_INDEX &&
+          dominant !== TRANSPARENT_INDEX &&
+          isProtectedColorContrast(palette[current[offset]], palette[dominant]);
         if (
           dominant !== current[offset] &&
+          !protectsDistinctDetail &&
           dominantCount >= minimumDominance &&
           dominantCount >= currentCount + minimumLead
         ) next[offset] = dominant;
@@ -247,13 +267,74 @@ function smoothIndexedMap(width: number, height: number, source: Uint8Array, cle
   return current;
 }
 
-function removeTinyComponents(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+function blurAndSnapIndexedMap(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  alphaMap: Uint8ClampedArray,
+  palette: PaletteColor[],
+  cleanup: CleanupLevel,
+) {
+  if (cleanup !== "medium" && cleanup !== "strong") return source.slice();
+
+  const longestSide = Math.max(width, height);
+  const blurRadius = cleanup === "strong"
+    ? Math.max(2.8, Math.min(6, longestSide / 320))
+    : Math.max(.75, Math.min(2, longestSide / 850));
+  const sourceImage = renderPalette(width, height, source, alphaMap, palette);
+  const sourceCanvas = canvasFromImageData(sourceImage);
+  const blurredCanvas = document.createElement("canvas");
+  blurredCanvas.width = width;
+  blurredCanvas.height = height;
+  const context = blurredCanvas.getContext("2d", { willReadFrequently: true });
+  if (!context || !("filter" in context)) return source.slice();
+
+  context.clearRect(0, 0, width, height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.filter = `blur(${blurRadius.toFixed(2)}px)`;
+  context.drawImage(sourceCanvas, 0, 0);
+  context.filter = "none";
+  const blurred = context.getImageData(0, 0, width, height).data;
+  const output = new Uint8Array(source.length).fill(TRANSPARENT_INDEX);
+
+  for (let pixel = 0; pixel < source.length; pixel += 1) {
+    if (source[pixel] === TRANSPARENT_INDEX || alphaMap[pixel] <= 8) continue;
+    const offset = pixel * 4;
+    let closest = source[pixel];
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < palette.length; index += 1) {
+      const distance = colorDistance(blurred[offset], blurred[offset + 1], blurred[offset + 2], palette[index]);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        closest = index;
+      }
+    }
+    const protectsDistinctDetail = cleanup === "strong" &&
+      closest !== source[pixel] &&
+      isProtectedColorContrast(palette[source[pixel]], palette[closest]);
+    output[pixel] = protectsDistinctDetail ? source[pixel] : closest;
+  }
+
+  return output;
+}
+
+function removeTinyComponents(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  cleanup: CleanupLevel,
+  palette: PaletteColor[],
+) {
   const totalPixels = width * height;
   const minimumArea = {
     none: 0,
     light: Math.max(4, Math.round(totalPixels * .000004)),
-    medium: Math.max(18, Math.round(totalPixels * .000025)),
-    strong: Math.max(180, Math.round(totalPixels * .00028)),
+    medium: Math.max(30, Math.round(totalPixels * .00004)),
+    // Ultra intentionally keeps only substantial masses. This is deliberately
+    // much stronger than pathomit: raster freckles are reassigned before they
+    // can become connected subpaths inside an otherwise large color layer.
+    strong: Math.max(600, Math.round(totalPixels * .0009)),
   }[cleanup];
   if (!minimumArea) return source.slice();
 
@@ -314,6 +395,11 @@ function removeTinyComponents(width: number, height: number, source: Uint8Array,
         strongestScore = score;
       }
     }
+    const protectsDistinctDetail = cleanup === "strong" &&
+      replacement !== TRANSPARENT_INDEX &&
+      isProtectedColorContrast(palette[colorIndex], palette[replacement]);
+    if (protectsDistinctDetail) continue;
+
     for (let index = 0; index < tail; index += 1) {
       output[component[index]] = replacement;
       globalCounts[colorIndex] = Math.max(0, globalCounts[colorIndex] - 1);
@@ -324,14 +410,26 @@ function removeTinyComponents(width: number, height: number, source: Uint8Array,
   return output;
 }
 
-function cleanIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+function cleanIndexedMap(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  alphaMap: Uint8ClampedArray,
+  palette: PaletteColor[],
+  cleanup: CleanupLevel,
+) {
   if (cleanup === "none") return source.slice();
-  const withoutIslands = removeTinyComponents(width, height, source, cleanup);
-  const smoothed = smoothIndexedMap(width, height, withoutIslands, cleanup);
+  // Blur the indexed color map and snap it straight back to the original
+  // palette. Narrow spikes, dotted antialiasing bands, and one-pixel bridges
+  // lose their local color majority and are absorbed into the nearest large
+  // mass. Colors stay exact because no blended color reaches the SVG.
+  const massOnlyMap = blurAndSnapIndexedMap(width, height, source, alphaMap, palette, cleanup);
+  const withoutIslands = removeTinyComponents(width, height, massOnlyMap, cleanup, palette);
+  const smoothed = smoothIndexedMap(width, height, withoutIslands, cleanup, palette);
   // Smoothing can leave a final one-pixel crescent at a former island edge.
   // Run component absorption once more so only substantial color masses reach
   // the vector tracer.
-  return removeTinyComponents(width, height, smoothed, cleanup);
+  return removeTinyComponents(width, height, smoothed, cleanup, palette);
 }
 
 function normalizePalette(
@@ -681,7 +779,14 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
     };
   });
 
-  return resultFromParts(width, height, cleanIndexedMap(width, height, pixelMap, cleanup), alphaMap, palette, cleanup);
+  return resultFromParts(
+    width,
+    height,
+    cleanIndexedMap(width, height, pixelMap, alphaMap, palette, cleanup),
+    alphaMap,
+    palette,
+    cleanup,
+  );
 }
 
 export function recolorResult(result: VectorResult, palette: PaletteColor[], cleanup: CleanupLevel) {
