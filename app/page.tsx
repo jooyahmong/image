@@ -48,6 +48,7 @@ import {
   RasterSource,
   recolorResult,
   VectorResult,
+  MAX_VECTOR_OBJECTS,
 } from "./vector-utils";
 
 const steps = ["Upload", "Colors", "Edit", "Crop", "Export"];
@@ -105,6 +106,7 @@ export default function Home() {
   const [brushSize, setBrushSize] = useState(42);
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
+  const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
 
@@ -357,6 +359,7 @@ export default function Home() {
     if (!result) return;
     setCrop({ x: 0, y: 0, width: result.width, height: result.height });
     setExportMessage("");
+    setSelectedObjectIndex(null);
     setCropOpen(true);
   }, [result]);
 
@@ -376,6 +379,10 @@ export default function Home() {
 
   const autoCropBounds = useMemo(() => result ? getVisibleBounds(result) : null, [result]);
   const separateObjects = useMemo(() => result && cropOpen ? getSeparateObjectBounds(result) : [], [cropOpen, result]);
+  const selectedObjectResult = useMemo(() => {
+    if (!result || selectedObjectIndex === null || !separateObjects[selectedObjectIndex]) return null;
+    return extractObjectResult(result, separateObjects[selectedObjectIndex], cleanup);
+  }, [cleanup, result, selectedObjectIndex, separateObjects]);
   const hasTransparentTrim = useMemo(() => !!result && !!autoCropBounds && (
     autoCropBounds.x > 0 || autoCropBounds.y > 0 ||
     autoCropBounds.x + autoCropBounds.width < result.width ||
@@ -469,9 +476,9 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#" aria-label="Jookland Vector Studio home">
+        <a className="brand" href="#" aria-label="WOOJOO Path home">
           <span className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></span>
-          <span>Vector Studio</span>
+          <span>WOOJOO Path</span>
           <em>by Jookland</em>
         </a>
         <div className="privacy-note"><ShieldCheck size={16} /><span>Your image stays on this device</span></div>
@@ -563,7 +570,7 @@ export default function Home() {
             </div>
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
-              <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
+              <span><Merge size={16}/><b>{result.pathCount}/{MAX_VECTOR_OBJECTS}</b> objects max</span>
               <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
               <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
@@ -629,12 +636,15 @@ export default function Home() {
             <div className="crop-layout">
               <div className="crop-preview-wrap">
                 <div className="crop-preview">
-                  <div className="crop-canvas" style={{ aspectRatio: `${result.width} / ${result.height}`, width: result.width / result.height >= 4 / 3 ? "100%" : "auto", height: result.width / result.height >= 4 / 3 ? "auto" : "100%" }}>
-                    <div className="crop-svg" dangerouslySetInnerHTML={{ __html: result.svg }}/>
-                    <div className="crop-frame" style={{ left: `${(crop.x / result.width) * 100}%`, top: `${(crop.y / result.height) * 100}%`, width: `${(crop.width / result.width) * 100}%`, height: `${(crop.height / result.height) * 100}%` }}/>
+                  <div className={`crop-canvas ${selectedObjectResult ? "object-isolated-preview" : ""}`} style={{ aspectRatio: `${selectedObjectResult?.width ?? result.width} / ${selectedObjectResult?.height ?? result.height}`, width: (selectedObjectResult?.width ?? result.width) / (selectedObjectResult?.height ?? result.height) >= 4 / 3 ? "100%" : "auto", height: (selectedObjectResult?.width ?? result.width) / (selectedObjectResult?.height ?? result.height) >= 4 / 3 ? "auto" : "100%" }}>
+                    <div className="crop-svg" dangerouslySetInnerHTML={{ __html: selectedObjectResult?.svg ?? result.svg }}/>
+                    {!selectedObjectResult && (
+                      <div className="crop-frame" style={{ left: `${(crop.x / result.width) * 100}%`, top: `${(crop.y / result.height) * 100}%`, width: `${(crop.width / result.width) * 100}%`, height: `${(crop.height / result.height) * 100}%` }}/>
+                    )}
+                    {selectedObjectResult && <span className="object-preview-badge"><Eye size={13}/>Object {(selectedObjectIndex ?? 0) + 1}</span>}
                   </div>
                 </div>
-                <p>The bright area is your final canvas. SVG paths stay fully editable.</p>
+                <p>{selectedObjectResult ? <>Only Object {(selectedObjectIndex ?? 0) + 1} is shown. <button type="button" onClick={() => setSelectedObjectIndex(null)}>Show all</button></> : "The bright area is your final canvas. SVG paths stay fully editable."}</p>
               </div>
               <div className="crop-controls">
                 <div className="auto-crop-panel">
@@ -660,8 +670,8 @@ export default function Home() {
                     <div className="object-export-heading"><div><label className="control-label">Separate objects</label><p>{separateObjects.length} disconnected objects detected. Save each with its own fitted canvas.</p></div><Layers3 size={17}/></div>
                     <div className="object-export-list">
                       {separateObjects.map((objectCrop, index) => (
-                        <div className="object-export-row" key={`${objectCrop.x}-${objectCrop.y}-${index}`}>
-                          <span><b>{index + 1}</b>Object {index + 1}<small>{Math.round(objectCrop.width)} × {Math.round(objectCrop.height)}</small></span>
+                        <div className={`object-export-row ${selectedObjectIndex === index ? "selected" : ""}`} key={`${objectCrop.x}-${objectCrop.y}-${index}`}>
+                          <button className="object-preview-button" type="button" aria-pressed={selectedObjectIndex === index} onClick={() => setSelectedObjectIndex((current) => current === index ? null : index)}><b>{index + 1}</b><span>Object {index + 1}<small>{Math.round(objectCrop.width)} × {Math.round(objectCrop.height)}</small></span><Eye size={13}/></button>
                           <button type="button" disabled={!!exportState} onClick={() => void exportObjectSvg(objectCrop, index)}>{exportState === `object-svg-${index}` ? "Saving…" : "SVG"}</button>
                           <button type="button" disabled={!!exportState} onClick={() => void exportObjectPng(objectCrop, index)}>{exportState === `object-png-${index}` ? "Rendering…" : `PNG ${pngScale}×`}</button>
                         </div>

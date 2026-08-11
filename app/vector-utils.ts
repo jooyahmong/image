@@ -50,6 +50,8 @@ export type ObjectRegion = CropBox & {
 
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
+export const MAX_VECTOR_OBJECTS = 25;
+const MAX_FOREGROUND_COMPONENTS = MAX_VECTOR_OBJECTS - 1;
 
 type SaveHandle = {
   createWritable: () => Promise<{
@@ -355,6 +357,10 @@ function removeTinyComponents(
 
     let head = 0;
     let tail = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
     component[tail++] = start;
     visited[start] = 1;
     const boundaryCounts = new Map<number, number>();
@@ -363,6 +369,10 @@ function removeTinyComponents(
       const pixel = component[head++];
       const x = pixel % width;
       const y = Math.floor(pixel / width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
       for (const [dx, dy] of neighbors) {
         const nextX = x + dx;
         const nextY = y + dy;
@@ -395,10 +405,24 @@ function removeTinyComponents(
         strongestScore = score;
       }
     }
-    const protectsDistinctDetail = cleanup === "strong" &&
+    const visibleBoundaries = [...boundaryCounts.entries()].filter(([candidate]) => candidate !== TRANSPARENT_INDEX);
+    const touchesTransparency = boundaryCounts.has(TRANSPARENT_INDEX);
+    const componentWidth = maxX - minX + 1;
+    const componentHeight = maxY - minY + 1;
+    const compactness = tail / Math.max(1, componentWidth * componentHeight);
+    const aspectRatio = Math.max(componentWidth / Math.max(1, componentHeight), componentHeight / Math.max(1, componentWidth));
+    // Preserve a high-contrast eye or intentional dot only when it is a compact
+    // island completely enclosed by one visible color. Edge antialiasing dots,
+    // wedges, and fringe fragments touch transparency or several colors and
+    // are therefore absorbed even when their sampled shade is high contrast.
+    const intentionalInteriorDetail = cleanup === "strong" &&
       replacement !== TRANSPARENT_INDEX &&
+      !touchesTransparency &&
+      visibleBoundaries.length === 1 &&
+      compactness >= .24 &&
+      aspectRatio <= 4 &&
       isProtectedColorContrast(palette[colorIndex], palette[replacement]);
-    if (protectsDistinctDetail) continue;
+    if (intentionalInteriorDetail) continue;
 
     for (let index = 0; index < tail; index += 1) {
       output[component[index]] = replacement;
@@ -407,6 +431,141 @@ function removeTinyComponents(
     }
   }
 
+  return output;
+}
+
+type IndexedComponent = {
+  colorIndex: number;
+  pixels: number[];
+  boundaryCounts: Map<number, number>;
+  area: number;
+  compactness: number;
+  aspectRatio: number;
+  touchesTransparency: boolean;
+};
+
+function collectIndexedComponents(width: number, height: number, source: Uint8Array) {
+  const visited = new Uint8Array(source.length);
+  const queue = new Int32Array(source.length);
+  const components: IndexedComponent[] = [];
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],             [1, 0],
+    [-1, 1],  [0, 1],   [1, 1],
+  ] as const;
+
+  for (let start = 0; start < source.length; start += 1) {
+    const colorIndex = source[start];
+    if (visited[start] || colorIndex === TRANSPARENT_INDEX) continue;
+    let head = 0;
+    let tail = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    const pixels: number[] = [];
+    const boundaryCounts = new Map<number, number>();
+    queue[tail++] = start;
+    visited[start] = 1;
+
+    while (head < tail) {
+      const pixel = queue[head++];
+      pixels.push(pixel);
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      for (const [dx, dy] of neighbors) {
+        const nextX = x + dx;
+        const nextY = y + dy;
+        if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) {
+          boundaryCounts.set(TRANSPARENT_INDEX, (boundaryCounts.get(TRANSPARENT_INDEX) ?? 0) + 1);
+          continue;
+        }
+        const nextPixel = nextY * width + nextX;
+        const nextColor = source[nextPixel];
+        if (nextColor === colorIndex) {
+          if (!visited[nextPixel]) {
+            visited[nextPixel] = 1;
+            queue[tail++] = nextPixel;
+          }
+        } else if (dx === 0 || dy === 0) {
+          boundaryCounts.set(nextColor, (boundaryCounts.get(nextColor) ?? 0) + 1);
+        }
+      }
+    }
+
+    const componentWidth = maxX - minX + 1;
+    const componentHeight = maxY - minY + 1;
+    components.push({
+      colorIndex,
+      pixels,
+      boundaryCounts,
+      area: pixels.length,
+      compactness: pixels.length / Math.max(1, componentWidth * componentHeight),
+      aspectRatio: Math.max(componentWidth / Math.max(1, componentHeight), componentHeight / Math.max(1, componentWidth)),
+      touchesTransparency: boundaryCounts.has(TRANSPARENT_INDEX),
+    });
+  }
+  return components;
+}
+
+function enforceComponentBudget(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  palette: PaletteColor[],
+  cleanup: CleanupLevel,
+) {
+  if (cleanup !== "strong") return source.slice();
+  const output = source.slice();
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    const components = collectIndexedComponents(width, height, output);
+    if (components.length <= MAX_FOREGROUND_COMPONENTS) break;
+    const globalCounts = new Uint32Array(256);
+    for (const color of output) globalCounts[color] += 1;
+    const candidates = components.map((component) => {
+      const visibleBoundaries = [...component.boundaryCounts.entries()].filter(([candidate]) => candidate !== TRANSPARENT_INDEX);
+      let replacement = TRANSPARENT_INDEX;
+      let bestScore = -1;
+      for (const [candidate, boundaryLength] of visibleBoundaries) {
+        const distancePenalty = 1 + colorDistance(
+          palette[component.colorIndex]?.r ?? 0,
+          palette[component.colorIndex]?.g ?? 0,
+          palette[component.colorIndex]?.b ?? 0,
+          palette[candidate] ?? { r: 0, g: 0, b: 0 },
+        ) / 6500;
+        const score = boundaryLength * (1 + Math.log2(2 + globalCounts[candidate])) / distancePenalty;
+        if (score > bestScore) {
+          replacement = candidate;
+          bestScore = score;
+        }
+      }
+      const intentionalInteriorDetail = replacement !== TRANSPARENT_INDEX &&
+        !component.touchesTransparency &&
+        visibleBoundaries.length === 1 &&
+        component.compactness >= .24 &&
+        component.aspectRatio <= 4 &&
+        isProtectedColorContrast(palette[component.colorIndex], palette[replacement]);
+      return { component, replacement, intentionalInteriorDetail };
+    }).filter(({ replacement }) => replacement !== TRANSPARENT_INDEX).sort((first, second) => {
+      if (first.intentionalInteriorDetail !== second.intentionalInteriorDetail) return first.intentionalInteriorDetail ? 1 : -1;
+      return first.component.area - second.component.area;
+    });
+
+    let remaining = components.length;
+    let changed = false;
+    for (const candidate of candidates) {
+      if (remaining <= MAX_FOREGROUND_COMPONENTS) break;
+      for (const pixel of candidate.component.pixels) output[pixel] = candidate.replacement;
+      remaining -= 1;
+      changed = true;
+    }
+    if (!changed) break;
+  }
   return output;
 }
 
@@ -429,7 +588,8 @@ function cleanIndexedMap(
   // Smoothing can leave a final one-pixel crescent at a former island edge.
   // Run component absorption once more so only substantial color masses reach
   // the vector tracer.
-  return removeTinyComponents(width, height, smoothed, cleanup, palette);
+  const withoutFinalFringe = removeTinyComponents(width, height, smoothed, cleanup, palette);
+  return enforceComponentBudget(width, height, withoutFinalFringe, palette, cleanup);
 }
 
 function normalizePalette(

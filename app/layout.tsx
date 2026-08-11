@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Jookland Vector Studio",
+  title: "WOOJOO Path",
   description: "Reduce colors, edit palettes, crop and export clean SVG artwork in your browser.",
   other: {
     "codex-preview": "development",
