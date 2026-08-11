@@ -67,6 +67,7 @@ type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
 type ViewMode = "original" | "reduced" | "vector";
 type BrushTool = "protect" | "unprotect";
 type CropDragMode = "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+type BrushPoint = { x: number; y: number; scale: number; radius: number };
 
 function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
@@ -130,6 +131,7 @@ export default function Home() {
   const [brushMode, setBrushMode] = useState(false);
   const [brushTool, setBrushTool] = useState<BrushTool>("protect");
   const [brushSize, setBrushSize] = useState(42);
+  const [brushCursor, setBrushCursor] = useState<BrushPoint | null>(null);
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
@@ -331,21 +333,21 @@ export default function Home() {
     context.putImageData(patch, minX, minY);
   }, [result]);
 
-  const brushAt = useCallback((x: number, y: number) => {
+  const brushAt = useCallback((x: number, y: number, radius: number) => {
     if (!result || !selectedColors.length) return;
     const selected = new Set(selectedColors);
-    const radius = Math.max(2, brushSize / 2);
-    const minX = Math.max(0, Math.floor(x - radius));
-    const minY = Math.max(0, Math.floor(y - radius));
-    const maxX = Math.min(result.width - 1, Math.ceil(x + radius));
-    const maxY = Math.min(result.height - 1, Math.ceil(y + radius));
+    const imageRadius = Math.max(.5, radius);
+    const minX = Math.max(0, Math.floor(x - imageRadius));
+    const minY = Math.max(0, Math.floor(y - imageRadius));
+    const maxX = Math.min(result.width - 1, Math.ceil(x + imageRadius));
+    const maxY = Math.min(result.height - 1, Math.ceil(y + imageRadius));
     let countDelta = 0;
 
     for (let pixelY = minY; pixelY <= maxY; pixelY += 1) {
       for (let pixelX = minX; pixelX <= maxX; pixelX += 1) {
         const dx = pixelX - x;
         const dy = pixelY - y;
-        if (dx * dx + dy * dy > radius * radius) continue;
+        if (dx * dx + dy * dy > imageRadius * imageRadius) continue;
         const pixel = pixelY * result.width + pixelX;
         if (!selected.has(result.pixelMap[pixel])) continue;
         const nextValue = brushTool === "protect" ? 1 : 0;
@@ -356,43 +358,46 @@ export default function Home() {
     }
     if (countDelta) setProtectedCount((current) => Math.max(0, current + countDelta));
     renderProtectionPatch(minX, minY, maxX, maxY);
-  }, [brushSize, brushTool, renderProtectionPatch, result, selectedColors]);
+  }, [brushTool, renderProtectionPatch, result, selectedColors]);
 
   const pointerToImage = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!result || !previewRef.current) return null;
-    const bounds = previewRef.current.getBoundingClientRect();
-    const imageRatio = result.width / result.height;
-    const boxRatio = bounds.width / bounds.height;
-    const renderedWidth = imageRatio > boxRatio ? bounds.width : bounds.height * imageRatio;
-    const renderedHeight = imageRatio > boxRatio ? bounds.width / imageRatio : bounds.height;
-    const left = bounds.left + (bounds.width - renderedWidth) / 2;
-    const top = bounds.top + (bounds.height - renderedHeight) / 2;
-    const x = ((event.clientX - left) / renderedWidth) * result.width;
-    const y = ((event.clientY - top) / renderedHeight) * result.height;
+    const svg = previewRef.current.querySelector<SVGSVGElement>(".svg-artwork svg");
+    const matrix = svg?.getScreenCTM();
+    if (!svg || !matrix) return null;
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+    const x = point.x;
+    const y = point.y;
     if (x < 0 || y < 0 || x >= result.width || y >= result.height) return null;
-    return { x, y };
-  }, [result]);
+    const scale = Math.max(.0001, Math.hypot(matrix.a, matrix.b));
+    return { x, y, scale, radius: (brushSize / 2) / scale };
+  }, [brushSize, result]);
 
-  const continueBrush = useCallback((point: { x: number; y: number }) => {
+  const continueBrush = useCallback((point: BrushPoint) => {
     const previous = lastBrushPoint.current;
     if (!previous) {
-      brushAt(point.x, point.y);
+      brushAt(point.x, point.y, point.radius);
       lastBrushPoint.current = point;
       return;
     }
     const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-    const steps = Math.max(1, Math.ceil(distance / Math.max(2, brushSize / 5)));
+    const steps = Math.max(1, Math.ceil(distance / Math.max(.5, point.radius / 2.5)));
     for (let step = 1; step <= steps; step += 1) {
       const progress = step / steps;
-      brushAt(previous.x + (point.x - previous.x) * progress, previous.y + (point.y - previous.y) * progress);
+      brushAt(
+        previous.x + (point.x - previous.x) * progress,
+        previous.y + (point.y - previous.y) * progress,
+        point.radius,
+      );
     }
     lastBrushPoint.current = point;
-  }, [brushAt, brushSize]);
+  }, [brushAt]);
 
   const startBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!brushMode) return;
     const point = pointerToImage(event);
     if (!point) return;
+    setBrushCursor(point);
     event.currentTarget.setPointerCapture(event.pointerId);
     brushing.current = true;
     lastBrushPoint.current = null;
@@ -400,15 +405,19 @@ export default function Home() {
   }, [brushMode, continueBrush, pointerToImage]);
 
   const moveBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!brushing.current) return;
     const point = pointerToImage(event);
-    if (point) continueBrush(point);
+    setBrushCursor(point);
+    if (brushing.current && point) continueBrush(point);
   }, [continueBrush, pointerToImage]);
 
   const stopBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     brushing.current = false;
     lastBrushPoint.current = null;
+  }, []);
+
+  const leaveBrush = useCallback(() => {
+    if (!brushing.current) setBrushCursor(null);
   }, []);
 
   const startPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -596,7 +605,14 @@ export default function Home() {
     }
   }, [cleanup, fileName, pngScale, result]);
 
-  const previewSvg = useMemo(() => result ? highlightSvg(result.svg, selectedColors) : "", [result, selectedColors]);
+  const previewSvg = useMemo(() => {
+    if (!result) return "";
+    const highlighted = highlightSvg(result.svg, selectedColors);
+    if (!brushMode || panMode || viewMode !== "vector" || !brushCursor) return highlighted;
+    const outline = 1 / brushCursor.scale;
+    const cursor = `<g aria-hidden="true" pointer-events="none" data-brush-cursor="true"><circle cx="${brushCursor.x}" cy="${brushCursor.y}" r="${brushCursor.radius}" fill="none" stroke="#fff" stroke-width="${outline * 3}"/><circle cx="${brushCursor.x}" cy="${brushCursor.y}" r="${brushCursor.radius}" fill="none" stroke="#111" stroke-width="${outline}" stroke-opacity=".9"/></g>`;
+    return highlighted.replace(/<\/svg>\s*$/, `${cursor}</svg>`);
+  }, [brushCursor, brushMode, panMode, result, selectedColors, viewMode]);
 
   return (
     <main className="app-shell">
@@ -690,7 +706,7 @@ export default function Home() {
             <div className="setting-row"><div><label htmlFor="smoothness">Smoothness</label><small>Label cleanup, tracing size, and curve simplification</small></div><span className="value-box">{smoothness}</span></div>
             <input id="smoothness" className="range-control smoothness-range" type="range" min="0" max="100" value={smoothness} style={{ background: `linear-gradient(90deg, var(--green) 0 ${smoothnessProgress}%, #e9ece8 ${smoothnessProgress}% 100%)` }} onChange={(event) => setSmoothness(Number(event.target.value))}/>
             <div className="range-labels" aria-hidden="true"><span>Precise</span><span>Balanced</span><span>Smooth</span></div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> removes one-pixel antialias fringes with a 3×3 label majority pass, traces at a reduced resolution, and keeps useful details editable.</p></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> uses one 3×3 label pass, traces at a reduced resolution, and removes disconnected fragments below 0.05% of the artwork while keeping substantial details editable.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
@@ -701,12 +717,12 @@ export default function Home() {
             <div className="editor-toolbar">
               <button className="back-button" type="button" onClick={() => setResult(null)}><ArrowLeft size={16}/> Settings</button>
               <div className="view-tabs" role="tablist" aria-label="Preview mode">
-                {(["original", "reduced", "vector"] as ViewMode[]).map((mode) => <button className={viewMode === mode ? "active" : ""} type="button" role="tab" key={mode} onClick={() => setViewMode(mode)}>{mode === "original" ? "Original" : mode === "reduced" ? "Reduced" : "SVG"}</button>)}
+                {(["original", "reduced", "vector"] as ViewMode[]).map((mode) => <button className={viewMode === mode ? "active" : ""} type="button" role="tab" key={mode} onClick={() => { setBrushCursor(null); setViewMode(mode); }}>{mode === "original" ? "Original" : mode === "reduced" ? "Reduced" : "SVG"}</button>)}
               </div>
               <div className="zoom-controls" aria-label="Preview zoom and pan controls">
-                <button className={panMode ? "active" : ""} type="button" aria-label={panMode ? "Return to brush tool" : "Use hand tool to move the canvas"} aria-pressed={panMode} disabled={zoom <= 100} onClick={() => setPanMode((current) => !current)}><Hand size={15}/></button>
+                <button className={panMode ? "active" : ""} type="button" aria-label={panMode ? "Return to brush tool" : "Use hand tool to move the canvas"} aria-pressed={panMode} disabled={zoom <= 100} onClick={() => { setBrushCursor(null); setPanMode((current) => !current); }}><Hand size={15}/></button>
                 <button type="button" aria-label="Zoom out" disabled={zoom <= 50} onClick={() => setZoom((current) => Math.max(50, current - 25))}><ZoomOut size={15}/></button>
-                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => { setZoom(100); setPanMode(false); }}>{zoom}%</button>
+                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => { setBrushCursor(null); setZoom(100); setPanMode(false); }}>{zoom}%</button>
                 <button type="button" aria-label="Zoom in" disabled={zoom >= 400} onClick={() => setZoom((current) => Math.min(400, current + 25))}><ZoomIn size={15}/></button>
               </div>
             </div>
@@ -732,6 +748,7 @@ export default function Home() {
                       onPointerMove={moveBrush}
                       onPointerUp={stopBrush}
                       onPointerCancel={stopBrush}
+                      onPointerLeave={leaveBrush}
                     />
                   </div>
                 )}
@@ -777,7 +794,7 @@ export default function Home() {
             <div className={`brush-panel ${brushMode ? "active" : ""}`}>
               <div className="brush-heading">
                 <div><strong>Keep-area brush</strong><span>Brush parts of the selected color that must not be deleted.</span></div>
-                <button className={brushMode ? "active" : ""} type="button" disabled={!selectedColors.length || busy} onClick={() => { setViewMode("vector"); setPanMode(false); setBrushMode((current) => !current); }}><Paintbrush size={14}/>{brushMode ? "Brush on" : "Use brush"}</button>
+                <button className={brushMode ? "active" : ""} type="button" disabled={!selectedColors.length || busy} onClick={() => { setBrushCursor(null); setViewMode("vector"); setPanMode(false); setBrushMode((current) => !current); }}><Paintbrush size={14}/>{brushMode ? "Brush on" : "Use brush"}</button>
               </div>
               {brushMode && (
                 <>

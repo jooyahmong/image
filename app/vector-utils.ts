@@ -249,7 +249,7 @@ function smoothIndexedMap(
     none: [] as number[],
     light: [1],
     medium: [1],
-    strong: [1, 1],
+    strong: [1],
   }[cleanup];
   let current = source.slice();
 
@@ -807,6 +807,51 @@ function curvedPathData(path: string, cleanup: CleanupLevel) {
   return pathData ? curvePathData(pathData, cleanup) : "";
 }
 
+function tracedPathArea(path: string) {
+  const pathData = path.match(/\sd="([^"]*)"/)?.[1] ?? "";
+  const tokens = pathData.match(/[MLQCZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? [];
+  const contours: VectorPoint[][] = [];
+  let contour: VectorPoint[] = [];
+  let index = 0;
+  const finishContour = () => {
+    if (contour.length >= 3) contours.push(contour);
+    contour = [];
+  };
+
+  while (index < tokens.length) {
+    const command = tokens[index++].toUpperCase();
+    if (command === "M" || command === "L") {
+      if (command === "M") finishContour();
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "Q") {
+      index += 2;
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "C") {
+      index += 4;
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "Z") {
+      finishContour();
+    }
+  }
+  finishContour();
+
+  const signedArea = contours.reduce((total, points) => {
+    let twiceArea = 0;
+    for (let point = 0; point < points.length; point += 1) {
+      const current = points[point];
+      const next = points[(point + 1) % points.length];
+      twiceArea += current.x * next.y - next.x * current.y;
+    }
+    return total + twiceArea / 2;
+  }, 0);
+  return Math.abs(signedArea);
+}
+
+function keepTracedPath(path: string, canvasArea: number, cleanup: CleanupLevel) {
+  const minimumShare = { none: 0, light: .0001, medium: .0005, strong: .0005 }[cleanup];
+  return !minimumShare || tracedPathArea(path) >= canvasArea * minimumShare;
+}
+
 function compoundPath(pathData: string[], color: string, strokeWidth: number) {
   if (!pathData.length) return "";
   return `<path fill="${color}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" fill-rule="evenodd" clip-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
@@ -819,9 +864,12 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     // obvious polygon edges. A low line threshold plus a progressively wider
     // quadratic threshold keeps fewer anchors while joining them with curves.
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .2, maximumDimension: 1600 },
-    light: { pathOmit: 5, lineTolerance: .3, curveTolerance: 1.35, blur: 0, blurDelta: 28, stroke: .25, maximumDimension: 1400 },
-    medium: { pathOmit: 8, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, maximumDimension: 1200 },
-    strong: { pathOmit: 14, lineTolerance: .12, curveTolerance: 2.7, blur: 0, blurDelta: 38, stroke: .35, maximumDimension: 800 },
+    // ImageTracer's pathomit counts edge nodes rather than pixel area, so keep
+    // it conservative and use keepTracedPath() for the requested area-based
+    // equivalent of Potrace's larger turdsize setting.
+    light: { pathOmit: 8, lineTolerance: .3, curveTolerance: 1.35, blur: 0, blurDelta: 28, stroke: .25, maximumDimension: 1400 },
+    medium: { pathOmit: 12, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, maximumDimension: 1200 },
+    strong: { pathOmit: 20, lineTolerance: .12, curveTolerance: 2.7, blur: 0, blurDelta: 38, stroke: .35, maximumDimension: 800 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -883,6 +931,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   });
   const silhouettePaths: string[] = [];
   for (const match of silhouetteSvg.matchAll(/<path\s+[^>]*desc="l\s+0\s+p\s+\d+"[^>]*\/>/g)) {
+    if (!keepTracedPath(match[0], traceImageData.width * traceImageData.height, cleanup)) continue;
     const pathData = curvedPathData(match[0], cleanup);
     if (pathData) silhouettePaths.push(pathData);
   }
@@ -895,6 +944,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
     const layer = Number(match[1]);
     if (pathsByLayer[layer]) {
+      if (!keepTracedPath(match[0], traceImageData.width * traceImageData.height, cleanup)) continue;
       const pathData = curvedPathData(match[0], cleanup);
       if (pathData) pathsByLayer[layer].push(pathData);
     }
