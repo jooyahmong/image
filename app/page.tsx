@@ -735,7 +735,7 @@ export default function Home() {
             <div className="setting-row"><div><label htmlFor="smoothness">Smoothness</label><small>Label cleanup, tracing size, and curve simplification</small></div><span className="value-box">{smoothness}</span></div>
             <input id="smoothness" className="range-control smoothness-range" type="range" min="0" max="100" value={smoothness} style={{ background: `linear-gradient(90deg, var(--green) 0 ${smoothnessProgress}%, #e9ece8 ${smoothnessProgress}% 100%)` }} onChange={(event) => setSmoothness(Number(event.target.value))}/>
             <div className="range-labels" aria-hidden="true"><span>Precise</span><span>Balanced</span><span>Smooth</span></div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> uses one 3×3 label pass, traces at a reduced resolution, and removes disconnected fragments below 0.05% of the artwork while keeping substantial details editable.</p></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
@@ -791,7 +791,7 @@ export default function Home() {
               <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
               <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> anchors</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
-              <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
+              <span><Layers3 size={16}/><b>{result.curveRatio}%</b> cubic curves</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
             </div>
           </div>

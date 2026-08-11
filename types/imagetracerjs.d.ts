@@ -20,8 +20,33 @@ declare module "imagetracerjs" {
     pal?: TraceColor[];
   };
 
+  type TraceSegment = {
+    type: "L" | "Q";
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    x3?: number;
+    y3?: number;
+  };
+
+  type TracePath = {
+    segments: TraceSegment[];
+    boundingbox: [number, number, number, number];
+    holechildren: number[];
+    isholepath: boolean;
+  };
+
+  type TraceData = {
+    layers: TracePath[][];
+    palette: TraceColor[];
+    width: number;
+    height: number;
+  };
+
   const ImageTracer: {
     imagedataToSVG(imageData: ImageData, options?: TraceOptions): string;
+    imagedataToTracedata(imageData: ImageData, options?: TraceOptions): TraceData;
   };
 
   export default ImageTracer;
