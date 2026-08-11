@@ -280,10 +280,14 @@ function normalizePalette(
 
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
   const traceSettings = {
-    none: { pathOmit: 1, tolerance: 1.2, blur: 0, blurDelta: 22, stroke: .3, maximumDimension: 1200 },
-    light: { pathOmit: 7, tolerance: 2.4, blur: 1, blurDelta: 30, stroke: .55, maximumDimension: 900 },
-    medium: { pathOmit: 18, tolerance: 4.8, blur: 2, blurDelta: 42, stroke: .85, maximumDimension: 650 },
-    strong: { pathOmit: 38, tolerance: 8.5, blur: 3, blurDelta: 60, stroke: 1.2, maximumDimension: 450 },
+    // Keep the straight-line threshold deliberately low. ImageTracer tries a
+    // line before a spline, so raising both thresholds creates a handful of
+    // obvious polygon edges. A low line threshold plus a progressively wider
+    // quadratic threshold keeps fewer anchors while joining them with curves.
+    none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .25, maximumDimension: 1400 },
+    light: { pathOmit: 5, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
+    medium: { pathOmit: 11, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
+    strong: { pathOmit: 22, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -292,8 +296,8 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   if (hasTransparency) tracePalette.push({ r: 0, g: 0, b: 0, a: 0 });
 
   const rawSvg = ImageTracer.imagedataToSVG(traceImageData, {
-    ltres: traceSettings.tolerance,
-    qtres: traceSettings.tolerance,
+    ltres: traceSettings.lineTolerance,
+    qtres: traceSettings.curveTolerance,
     pathomit: traceSettings.pathOmit,
     rightangleenhance: false,
     colorsampling: 0,
@@ -305,7 +309,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     strokewidth: traceSettings.stroke,
     linefilter: cleanup !== "none",
     scale: 1,
-    roundcoords: 1,
+    roundcoords: 2,
     viewbox: true,
     desc: true,
     pal: tracePalette,
@@ -314,14 +318,20 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   const pathsByLayer = palette.map(() => [] as string[]);
   for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
     const layer = Number(match[1]);
-    if (pathsByLayer[layer]) pathsByLayer[layer].push(match[0].replace(/\sdesc="[^"]*"/, ""));
+    if (pathsByLayer[layer]) {
+      pathsByLayer[layer].push(
+        match[0]
+          .replace(/\sdesc="[^"]*"/, "")
+          .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" '),
+      );
+    }
   }
   const layers = pathsByLayer.map((paths, index) => {
     if (!paths.length) return "";
     const color = palette[index];
     return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${paths.join("")}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
 }
 
 function resultFromParts(

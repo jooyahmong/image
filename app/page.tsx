@@ -345,9 +345,9 @@ export default function Home() {
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer nodes, softer curves, and less detail</small></div></div>
+            <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer anchors joined with smooth Bézier curves</small></div></div>
             <div className="segmented">{cleanupLevels.map((level) => <button className={cleanup === level.value ? "selected" : ""} type="button" key={level.value} onClick={() => setCleanup(level.value)}>{level.label}</button>)}</div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra is now the default for clean stock-style artwork. Choose Smooth only when small eyes or lettering must remain.</p></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra removes small detail while keeping rounded contours curved. Choose Smooth when small eyes or lettering must remain.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
