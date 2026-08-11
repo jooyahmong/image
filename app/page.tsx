@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowLeft,
   Check,
@@ -420,6 +420,35 @@ export default function Home() {
     if (!brushing.current) setBrushCursor(null);
   }, []);
 
+  const syncProtectionOverlay = useCallback(() => {
+    const preview = previewRef.current;
+    const canvas = protectionCanvas.current;
+    const svg = preview?.querySelector<SVGSVGElement>(".svg-artwork svg");
+    if (!preview || !canvas || !svg) return;
+    const previewBounds = preview.getBoundingClientRect();
+    const svgBounds = svg.getBoundingClientRect();
+    canvas.style.left = `${svgBounds.left - previewBounds.left}px`;
+    canvas.style.top = `${svgBounds.top - previewBounds.top}px`;
+    canvas.style.width = `${svgBounds.width}px`;
+    canvas.style.height = `${svgBounds.height}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!result || viewMode !== "vector") return;
+    const preview = previewRef.current;
+    const svg = preview?.querySelector<SVGSVGElement>(".svg-artwork svg");
+    if (!preview || !svg) return;
+    syncProtectionOverlay();
+    const observer = new ResizeObserver(syncProtectionOverlay);
+    observer.observe(preview);
+    observer.observe(svg);
+    window.addEventListener("resize", syncProtectionOverlay);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncProtectionOverlay);
+    };
+  }, [result, syncProtectionOverlay, viewMode, zoom]);
+
   const startPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const artboard = artboardRef.current;
     if (!artboard || !panEnabled || busy) return;
@@ -743,7 +772,7 @@ export default function Home() {
                     <canvas
                       ref={protectionCanvas}
                       className="protection-canvas"
-                      aria-label="Brush over highlighted color areas to exclude them from deletion"
+                      aria-label="Brush directly over highlighted color areas to exclude them from deletion"
                       onPointerDown={startBrush}
                       onPointerMove={moveBrush}
                       onPointerUp={stopBrush}

@@ -52,6 +52,12 @@ export type ObjectRegion = CropBox & {
 
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
+// Canvas returns un-premultiplied RGB values. On a very low-alpha edge pixel,
+// that division can amplify tiny channel differences into colors that never
+// existed in the artwork. Keep those pixels out of both palette sampling and
+// the indexed label map; the alpha channel, not their unstable RGB, owns the
+// outer boundary.
+export const ALPHA_CUT = 128;
 export const MAX_VECTOR_OBJECTS = 25;
 
 type SaveHandle = {
@@ -109,7 +115,7 @@ function trimTransparent(imageData: ImageData) {
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (data[(y * width + x) * 4 + 3] > 2) {
+      if (data[(y * width + x) * 4 + 3] >= ALPHA_CUT) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
@@ -258,10 +264,15 @@ function smoothIndexedMap(
     for (let y = radius; y < height - radius; y += 1) {
       for (let x = radius; x < width - radius; x += 1) {
         const offset = y * width + x;
+        // The binary alpha cutoff owns the transparent boundary. Never let a
+        // label-mode pass grow or erode that boundary by voting transparency
+        // against nearby visible colors.
+        if (current[offset] === TRANSPARENT_INDEX) continue;
         const counts = new Map<number, number>();
         for (let dy = -radius; dy <= radius; dy += 1) {
           for (let dx = -radius; dx <= radius; dx += 1) {
             const value = current[(y + dy) * width + x + dx];
+            if (value === TRANSPARENT_INDEX) continue;
             counts.set(value, (counts.get(value) ?? 0) + 1);
           }
         }
@@ -1010,7 +1021,7 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
 
   for (let pixel = 0; pixel < opaquePixels; pixel += sampleStep) {
     const offset = pixel * 4;
-    if (data[offset + 3] > 8) sample.push(data[offset], data[offset + 1], data[offset + 2], 255);
+    if (data[offset + 3] >= ALPHA_CUT) sample.push(data[offset], data[offset + 1], data[offset + 2], 255);
   }
   if (!sample.length) throw new Error("The image is fully transparent.");
 
@@ -1028,8 +1039,9 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
   for (let pixel = 0; pixel < opaquePixels; pixel += 1) {
     const offset = pixel * 4;
     const alpha = data[offset + 3];
-    alphaMap[pixel] = alpha;
-    if (alpha <= 8) continue;
+    const visible = alpha >= ALPHA_CUT;
+    alphaMap[pixel] = visible ? 255 : 0;
+    if (!visible) continue;
     let closest = 0;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (let index = 0; index < candidates.length; index += 1) {
