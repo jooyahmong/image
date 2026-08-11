@@ -38,6 +38,8 @@ export type VectorResult = {
   svg: string;
   pathCount: number;
   nodeCount: number;
+  artworkCount: number;
+  maxArtworkObjectCount: number;
   fileSize: number;
 };
 
@@ -51,7 +53,6 @@ export type ObjectRegion = CropBox & {
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
 export const MAX_VECTOR_OBJECTS = 25;
-const MAX_FOREGROUND_COMPONENTS = MAX_VECTOR_OBJECTS - 1;
 
 type SaveHandle = {
   createWritable: () => Promise<{
@@ -160,6 +161,28 @@ export async function loadRaster(file: File): Promise<RasterSource> {
   };
 }
 
+export function cropRasterSource(source: RasterSource, crop: CropBox): RasterSource {
+  const x = Math.max(0, Math.min(source.width - 1, Math.floor(crop.x)));
+  const y = Math.max(0, Math.min(source.height - 1, Math.floor(crop.y)));
+  const width = Math.max(1, Math.min(source.width - x, Math.round(crop.width)));
+  const height = Math.max(1, Math.min(source.height - y, Math.round(crop.height)));
+  const imageData = new ImageData(width, height);
+
+  for (let row = 0; row < height; row += 1) {
+    const sourceStart = ((y + row) * source.width + x) * 4;
+    const sourceEnd = sourceStart + width * 4;
+    imageData.data.set(source.imageData.data.subarray(sourceStart, sourceEnd), row * width * 4);
+  }
+
+  return {
+    ...source,
+    width,
+    height,
+    imageData,
+    previewUrl: imageDataToUrl(imageData),
+  };
+}
+
 function rgbToHex(r: number, g: number, b: number) {
   return `#${[r, g, b].map((value) => value.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
 }
@@ -225,7 +248,7 @@ function smoothIndexedMap(
     none: [] as number[],
     light: [1],
     medium: [1, 1],
-    strong: [1, 2, 1],
+    strong: [1, 1],
   }[cleanup];
   let current = source.slice();
 
@@ -281,7 +304,7 @@ function blurAndSnapIndexedMap(
 
   const longestSide = Math.max(width, height);
   const blurRadius = cleanup === "strong"
-    ? Math.max(2.8, Math.min(6, longestSide / 320))
+    ? Math.max(.9, Math.min(2, longestSide / 700))
     : Math.max(.75, Math.min(2, longestSide / 850));
   const sourceImage = renderPalette(width, height, source, alphaMap, palette);
   const sourceCanvas = canvasFromImageData(sourceImage);
@@ -332,11 +355,11 @@ function removeTinyComponents(
   const minimumArea = {
     none: 0,
     light: Math.max(4, Math.round(totalPixels * .000004)),
-    medium: Math.max(30, Math.round(totalPixels * .00004)),
-    // Ultra intentionally keeps only substantial masses. This is deliberately
-    // much stronger than pathomit: raster freckles are reassigned before they
-    // can become connected subpaths inside an otherwise large color layer.
-    strong: Math.max(600, Math.round(totalPixels * .0009)),
+    medium: Math.max(10, Math.round(totalPixels * .00002)),
+    // Ultra removes antialias crumbs without treating a deliberate bow, dot,
+    // eye, line, or pattern as disposable merely because the upload is a sheet
+    // containing several illustrations.
+    strong: Math.max(16, Math.round(totalPixels * .00004)),
   }[cleanup];
   if (!minimumArea) return source.slice();
 
@@ -512,6 +535,84 @@ function collectIndexedComponents(width: number, height: number, source: Uint8Ar
   return components;
 }
 
+function findLikelyBackgroundIndex(width: number, height: number, source: Uint8Array) {
+  const counts = new Uint32Array(256);
+  const edgeCounts = new Uint32Array(256);
+  let visible = 0;
+  let edgeTotal = 0;
+  for (let pixel = 0; pixel < source.length; pixel += 1) {
+    const color = source[pixel];
+    counts[color] += 1;
+    if (color !== TRANSPARENT_INDEX) visible += 1;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+      edgeCounts[color] += 1;
+      edgeTotal += 1;
+    }
+  }
+  let candidate = TRANSPARENT_INDEX;
+  for (let index = 0; index < edgeCounts.length; index += 1) {
+    if (edgeCounts[index] > edgeCounts[candidate]) candidate = index;
+  }
+  if (candidate === TRANSPARENT_INDEX) return TRANSPARENT_INDEX;
+  const edgeConfidence = edgeTotal ? edgeCounts[candidate] / edgeTotal : 0;
+  const imageShare = visible ? counts[candidate] / visible : 0;
+  return edgeConfidence >= .45 && imageShare >= .08 ? candidate : TRANSPARENT_INDEX;
+}
+
+function labelArtworkRegions(width: number, height: number, source: Uint8Array) {
+  const backgroundIndex = findLikelyBackgroundIndex(width, height, source);
+  const labels = new Int32Array(source.length).fill(-1);
+  const queue = new Int32Array(source.length);
+  let artworkCount = 0;
+
+  for (let start = 0; start < source.length; start += 1) {
+    if (labels[start] !== -1 || source[start] === TRANSPARENT_INDEX || source[start] === backgroundIndex) continue;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    labels[start] = artworkCount;
+    while (head < tail) {
+      const pixel = queue[head++];
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) continue;
+          const nextX = x + dx;
+          const nextY = y + dy;
+          if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+          const nextPixel = nextY * width + nextX;
+          if (
+            labels[nextPixel] !== -1 ||
+            source[nextPixel] === TRANSPARENT_INDEX ||
+            source[nextPixel] === backgroundIndex
+          ) continue;
+          labels[nextPixel] = artworkCount;
+          queue[tail++] = nextPixel;
+        }
+      }
+    }
+    artworkCount += 1;
+  }
+  return { labels, artworkCount, backgroundIndex };
+}
+
+function artworkComponentCounts(width: number, height: number, source: Uint8Array) {
+  const { labels, artworkCount, backgroundIndex } = labelArtworkRegions(width, height, source);
+  const counts = new Uint16Array(Math.max(1, artworkCount));
+  for (const component of collectIndexedComponents(width, height, source)) {
+    if (component.colorIndex === backgroundIndex || component.colorIndex === TRANSPARENT_INDEX) continue;
+    const artwork = labels[component.pixels[0]];
+    if (artwork >= 0) counts[artwork] += 1;
+  }
+  return {
+    artworkCount: Math.max(1, artworkCount),
+    maxArtworkObjectCount: counts.reduce((largest, count) => Math.max(largest, count), 0),
+  };
+}
+
 function enforceComponentBudget(
   width: number,
   height: number,
@@ -523,12 +624,22 @@ function enforceComponentBudget(
   const output = source.slice();
 
   for (let pass = 0; pass < 4; pass += 1) {
+    const { labels, backgroundIndex } = labelArtworkRegions(width, height, output);
     const components = collectIndexedComponents(width, height, output);
-    if (components.length <= MAX_FOREGROUND_COMPONENTS) break;
+    const countsByArtwork = new Map<number, number>();
+    for (const component of components) {
+      if (component.colorIndex === backgroundIndex || component.colorIndex === TRANSPARENT_INDEX) continue;
+      const artwork = labels[component.pixels[0]];
+      if (artwork >= 0) countsByArtwork.set(artwork, (countsByArtwork.get(artwork) ?? 0) + 1);
+    }
+    if ([...countsByArtwork.values()].every((count) => count <= MAX_VECTOR_OBJECTS)) break;
     const globalCounts = new Uint32Array(256);
     for (const color of output) globalCounts[color] += 1;
     const candidates = components.map((component) => {
-      const visibleBoundaries = [...component.boundaryCounts.entries()].filter(([candidate]) => candidate !== TRANSPARENT_INDEX);
+      const artwork = labels[component.pixels[0]];
+      const visibleBoundaries = [...component.boundaryCounts.entries()].filter(([candidate]) => (
+        candidate !== TRANSPARENT_INDEX && candidate !== backgroundIndex
+      ));
       let replacement = TRANSPARENT_INDEX;
       let bestScore = -1;
       for (const [candidate, boundaryLength] of visibleBoundaries) {
@@ -550,18 +661,30 @@ function enforceComponentBudget(
         component.compactness >= .24 &&
         component.aspectRatio <= 4 &&
         isProtectedColorContrast(palette[component.colorIndex], palette[replacement]);
-      return { component, replacement, intentionalInteriorDetail };
-    }).filter(({ replacement }) => replacement !== TRANSPARENT_INDEX).sort((first, second) => {
-      if (first.intentionalInteriorDetail !== second.intentionalInteriorDetail) return first.intentionalInteriorDetail ? 1 : -1;
+      const replacementDistance = replacement === TRANSPARENT_INDEX ? Number.POSITIVE_INFINITY : colorDistance(
+        palette[component.colorIndex]?.r ?? 0,
+        palette[component.colorIndex]?.g ?? 0,
+        palette[component.colorIndex]?.b ?? 0,
+        palette[replacement] ?? { r: 0, g: 0, b: 0 },
+      );
+      const similarBoundaryShade = replacementDistance <= 95 * 95;
+      return { artwork, component, replacement, intentionalInteriorDetail, similarBoundaryShade, replacementDistance };
+    }).filter(({ artwork, replacement, intentionalInteriorDetail, similarBoundaryShade }) => (
+      artwork >= 0 &&
+      replacement !== TRANSPARENT_INDEX &&
+      !intentionalInteriorDetail &&
+      similarBoundaryShade
+    )).sort((first, second) => {
+      if (first.replacementDistance !== second.replacementDistance) return first.replacementDistance - second.replacementDistance;
       return first.component.area - second.component.area;
     });
 
-    let remaining = components.length;
     let changed = false;
     for (const candidate of candidates) {
-      if (remaining <= MAX_FOREGROUND_COMPONENTS) break;
+      const remaining = countsByArtwork.get(candidate.artwork) ?? 0;
+      if (remaining <= MAX_VECTOR_OBJECTS) continue;
       for (const pixel of candidate.component.pixels) output[pixel] = candidate.replacement;
-      remaining -= 1;
+      countsByArtwork.set(candidate.artwork, remaining - 1);
       changed = true;
     }
     if (!changed) break;
@@ -759,7 +882,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .25, maximumDimension: 1400 },
     light: { pathOmit: 8, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
     medium: { pathOmit: 24, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
-    strong: { pathOmit: 96, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
+    strong: { pathOmit: 18, lineTolerance: .025, curveTolerance: 3.8, blur: 1, blurDelta: 42, stroke: .5, maximumDimension: 1000 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -860,6 +983,7 @@ function resultFromParts(
   const normalized = normalizePalette(width, height, pixelMap, palette);
   const imageData = renderPalette(width, height, normalized.pixelMap, alphaMap, normalized.palette);
   const svg = traceImage(imageData, normalized.palette, cleanup);
+  const artworkStats = artworkComponentCounts(width, height, normalized.pixelMap);
   return {
     width,
     height,
@@ -871,6 +995,7 @@ function resultFromParts(
     svg,
     pathCount: (svg.match(/<path\b/g) ?? []).length,
     nodeCount: (svg.match(/\b[MLQC]\s/g) ?? []).length,
+    ...artworkStats,
     fileSize: new Blob([svg], { type: "image/svg+xml" }).size,
   };
 }

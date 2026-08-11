@@ -26,11 +26,14 @@ import {
   Unlock,
   UploadCloud,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   applyPreset,
   CleanupLevel,
   createVectorResult,
+  cropRasterSource,
   cropSvg,
   CropBox,
   deleteColors,
@@ -69,6 +72,7 @@ const presets = {
 type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
 type ViewMode = "original" | "reduced" | "vector";
 type BrushTool = "protect" | "unprotect";
+type CropDragMode = "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 
 function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
@@ -77,6 +81,15 @@ function cleanFilename(name: string) {
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const sourceCropStage = useRef<HTMLSpanElement>(null);
+  const sourceCropDrag = useRef<{
+    mode: CropDragMode;
+    startClientX: number;
+    startClientY: number;
+    startCrop: CropBox;
+    renderedWidth: number;
+    renderedHeight: number;
+  } | null>(null);
   const protectionCanvas = useRef<HTMLCanvasElement>(null);
   const protectedMask = useRef(new Uint8Array());
   const brushing = useRef(false);
@@ -98,6 +111,8 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState({ index: -1, length: 0 });
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
+  const [sourceCrop, setSourceCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
+  const [zoom, setZoom] = useState(100);
   const [pngScale, setPngScale] = useState(2);
   const [exportState, setExportState] = useState("");
   const [exportMessage, setExportMessage] = useState("");
@@ -107,6 +122,7 @@ export default function Home() {
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
+  const colorSliderProgress = ((colorCount - 2) / 18) * 100;
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
 
@@ -132,6 +148,7 @@ export default function Home() {
       const loaded = await loadRaster(file);
       setFileName(file.name);
       setSource(loaded);
+      setSourceCrop({ x: 0, y: 0, width: loaded.width, height: loaded.height });
       setResult(null);
       history.current = [];
       historyIndex.current = -1;
@@ -154,13 +171,18 @@ export default function Home() {
     setError("");
     await new Promise((resolve) => window.setTimeout(resolve, 40));
     try {
-      const converted = createVectorResult(source, colorCount, cleanup);
+      const fullCrop = sourceCrop.x === 0 && sourceCrop.y === 0 && sourceCrop.width === source.width && sourceCrop.height === source.height;
+      const conversionSource = fullCrop ? source : cropRasterSource(source, sourceCrop);
+      const converted = createVectorResult(conversionSource, colorCount, cleanup);
+      setSource(conversionSource);
+      setSourceCrop({ x: 0, y: 0, width: conversionSource.width, height: conversionSource.height });
       setResult(converted);
       initialPalette.current = converted.palette.map((color) => ({ ...color }));
       history.current = [];
       historyIndex.current = -1;
       pushHistory(converted);
       setViewMode("vector");
+      setZoom(100);
       setPreset("original");
       protectedMask.current = new Uint8Array(converted.pixelMap.length);
       setProtectedCount(0);
@@ -171,7 +193,63 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
-  }, [cleanup, colorCount, pushHistory, source]);
+  }, [cleanup, colorCount, pushHistory, source, sourceCrop]);
+
+  const startSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!source || !sourceCropStage.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.target as HTMLElement;
+    const mode = (target.dataset.cropHandle as CropDragMode | undefined) ?? "move";
+    const bounds = sourceCropStage.current.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    sourceCropDrag.current = {
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startCrop: { ...sourceCrop },
+      renderedWidth: Math.max(1, bounds.width),
+      renderedHeight: Math.max(1, bounds.height),
+    };
+  }, [source, sourceCrop]);
+
+  const moveSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!source || !sourceCropDrag.current) return;
+    event.preventDefault();
+    const drag = sourceCropDrag.current;
+    const dx = ((event.clientX - drag.startClientX) / drag.renderedWidth) * source.width;
+    const dy = ((event.clientY - drag.startClientY) / drag.renderedHeight) * source.height;
+    const minimumWidth = Math.max(12, source.width * .03);
+    const minimumHeight = Math.max(12, source.height * .03);
+    const startLeft = drag.startCrop.x;
+    const startTop = drag.startCrop.y;
+    const startRight = drag.startCrop.x + drag.startCrop.width;
+    const startBottom = drag.startCrop.y + drag.startCrop.height;
+
+    if (drag.mode === "move") {
+      setSourceCrop({
+        ...drag.startCrop,
+        x: Math.max(0, Math.min(source.width - drag.startCrop.width, startLeft + dx)),
+        y: Math.max(0, Math.min(source.height - drag.startCrop.height, startTop + dy)),
+      });
+      return;
+    }
+
+    let left = startLeft;
+    let top = startTop;
+    let right = startRight;
+    let bottom = startBottom;
+    if (drag.mode.includes("w")) left = Math.max(0, Math.min(startRight - minimumWidth, startLeft + dx));
+    if (drag.mode.includes("e")) right = Math.min(source.width, Math.max(startLeft + minimumWidth, startRight + dx));
+    if (drag.mode.includes("n")) top = Math.max(0, Math.min(startBottom - minimumHeight, startTop + dy));
+    if (drag.mode.includes("s")) bottom = Math.min(source.height, Math.max(startTop + minimumHeight, startBottom + dy));
+    setSourceCrop({ x: left, y: top, width: right - left, height: bottom - top });
+  }, [source]);
+
+  const stopSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    sourceCropDrag.current = null;
+  }, []);
 
   const commitResult = useCallback(async (next: VectorResult) => {
     setBusy(true);
@@ -507,21 +585,52 @@ export default function Home() {
               <div><span className="step-label">STEP 1</span><h2>Upload your artwork</h2></div>
               {source && <button className="text-button" type="button" onClick={() => fileInput.current?.click()}><RotateCcw size={15}/> Replace</button>}
             </div>
-            <button
+            <div
               className={`dropzone ${isDragging ? "dragging" : ""} ${source ? "has-image" : ""}`}
-              type="button"
-              onClick={() => fileInput.current?.click()}
+              role="button"
+              tabIndex={source ? -1 : 0}
+              aria-label={source ? "Drag the crop frame to choose the area to vectorize" : "Choose an image to vectorize"}
+              onClick={() => { if (!source) fileInput.current?.click(); }}
+              onKeyDown={(event) => { if (!source && (event.key === "Enter" || event.key === " ")) fileInput.current?.click(); }}
               onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }}
               onDragOver={(event) => event.preventDefault()}
               onDragLeave={() => setIsDragging(false)}
               onDrop={(event) => { event.preventDefault(); setIsDragging(false); void acceptFile(event.dataTransfer.files[0]); }}
             >
               {source ? (
-                <><span className="checkerboard"><img src={source.previewUrl} alt={`Preview of ${fileName}`} /></span><span className="file-pill"><ImagePlus size={15}/>{fileName}<small>{source.width} × {source.height}px</small></span></>
+                <>
+                  <span className="checkerboard source-crop-checkerboard">
+                    <span ref={sourceCropStage} className="source-crop-stage" style={{
+                      aspectRatio: `${source.width} / ${source.height}`,
+                      width: source.width / source.height >= 4 / 3 ? "92%" : "auto",
+                      height: source.width / source.height >= 4 / 3 ? "auto" : "310px",
+                    }}>
+                      <img src={source.previewUrl} alt={`Preview of ${fileName}`} />
+                      <span
+                        className="source-crop-frame"
+                        style={{
+                          left: `${(sourceCrop.x / source.width) * 100}%`,
+                          top: `${(sourceCrop.y / source.height) * 100}%`,
+                          width: `${(sourceCrop.width / source.width) * 100}%`,
+                          height: `${(sourceCrop.height / source.height) * 100}%`,
+                        }}
+                        onPointerDown={startSourceCropDrag}
+                        onPointerMove={moveSourceCropDrag}
+                        onPointerUp={stopSourceCropDrag}
+                        onPointerCancel={stopSourceCropDrag}
+                      >
+                        {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const).map((handle) => <i className={`crop-handle crop-handle-${handle}`} data-crop-handle={handle} key={handle}/>) }
+                        <b className="source-crop-size">{Math.round(sourceCrop.width)} × {Math.round(sourceCrop.height)}</b>
+                      </span>
+                    </span>
+                  </span>
+                  <span className="crop-instruction"><Crop size={14}/>Drag the frame, edges, or corners to choose the area</span>
+                  <span className="file-pill"><ImagePlus size={15}/>{fileName}<small>{source.width} × {source.height}px</small></span>
+                </>
               ) : (
                 <><span className="upload-icon"><UploadCloud size={28} /></span><strong>{busy ? "Reading your image…" : "Drop your image here"}</strong><p>or click to choose a file</p><span className="formats">PNG · JPG · WEBP · up to 20 MB</span></>
               )}
-            </button>
+            </div>
             <input ref={fileInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void acceptFile(event.target.files?.[0])}/>
             {error && <p className="error-message">{error}</p>}
             <div className="local-processing"><LockKeyhole size={15}/><span><b>Private by design.</b> Nothing is uploaded or stored.</span></div>
@@ -530,10 +639,10 @@ export default function Home() {
           <aside className="settings-card">
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
-            <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} onChange={(event) => setColorCount(Number(event.target.value))}/>
+            <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }} onChange={(event) => setColorCount(Number(event.target.value))}/>
             <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer anchors joined with smooth Bézier curves</small></div></div>
             <div className="segmented">{cleanupLevels.map((level) => <button className={cleanup === level.value ? "selected" : ""} type="button" key={level.value} onClick={() => setCleanup(level.value)}>{level.label}</button>)}</div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra removes small detail while keeping rounded contours curved. Choose Smooth when small eyes or lettering must remain.</p></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra merges similar edge shades toward about 25 color objects per separated illustration. High-contrast eyes, bows, lines, and patterns stay protected.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
@@ -546,31 +655,37 @@ export default function Home() {
               <div className="view-tabs" role="tablist" aria-label="Preview mode">
                 {(["original", "reduced", "vector"] as ViewMode[]).map((mode) => <button className={viewMode === mode ? "active" : ""} type="button" role="tab" key={mode} onClick={() => setViewMode(mode)}>{mode === "original" ? "Original" : mode === "reduced" ? "Reduced" : "SVG"}</button>)}
               </div>
-              <span className="zoom-label">FIT</span>
+              <div className="zoom-controls" aria-label="Preview zoom controls">
+                <button type="button" aria-label="Zoom out" disabled={zoom <= 50} onClick={() => setZoom((current) => Math.max(50, current - 25))}><ZoomOut size={15}/></button>
+                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => setZoom(100)}>{zoom}%</button>
+                <button type="button" aria-label="Zoom in" disabled={zoom >= 400} onClick={() => setZoom((current) => Math.min(400, current + 25))}><ZoomIn size={15}/></button>
+              </div>
             </div>
             <div className={`artboard ${busy ? "processing" : ""}`}>
-              {viewMode === "original" && <img src={source?.previewUrl} alt="Original artwork" />}
-              {viewMode === "reduced" && <img src={result.previewUrl} alt="Color-reduced artwork" />}
-              {viewMode === "vector" && (
-                <div ref={previewRef} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
-                  <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
-                  <canvas
-                    ref={protectionCanvas}
-                    className="protection-canvas"
-                    aria-label="Brush over highlighted color areas to exclude them from deletion"
-                    onPointerDown={startBrush}
-                    onPointerMove={moveBrush}
-                    onPointerUp={stopBrush}
-                    onPointerCancel={stopBrush}
-                  />
-                </div>
-              )}
+              <div className="zoom-stage" style={{ width: `${zoom}%`, minHeight: `${Math.round(550 * zoom / 100)}px` }}>
+                {viewMode === "original" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={source?.previewUrl} alt="Original artwork" />}
+                {viewMode === "reduced" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={result.previewUrl} alt="Color-reduced artwork" />}
+                {viewMode === "vector" && (
+                  <div ref={previewRef} style={{ height: `${Math.round(490 * zoom / 100)}px` }} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
+                    <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+                    <canvas
+                      ref={protectionCanvas}
+                      className="protection-canvas"
+                      aria-label="Brush over highlighted color areas to exclude them from deletion"
+                      onPointerDown={startBrush}
+                      onPointerMove={moveBrush}
+                      onPointerUp={stopBrush}
+                      onPointerCancel={stopBrush}
+                    />
+                  </div>
+                )}
+              </div>
               {!!selectedColors.length && !busy && <span className="selection-badge"><Eye size={14}/>{selectedColors.length} color{selectedColors.length > 1 ? "s" : ""} highlighted</span>}
               {busy && <span className="processing-badge"><Sparkles size={15}/> Updating vector…</span>}
             </div>
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
-              <span><Merge size={16}/><b>{result.pathCount}/{MAX_VECTOR_OBJECTS}</b> objects max</span>
+              <span><Merge size={16}/><b>{result.maxArtworkObjectCount}/~{MAX_VECTOR_OBJECTS}</b> max per artwork</span>
               <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
               <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
