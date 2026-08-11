@@ -111,9 +111,12 @@ button { color: inherit; }
 .zoom-label { justify-self: end; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; color: #87918c; font-size: 8px; font-weight: 900; letter-spacing: .08em; }
 .artboard { position: relative; min-height: 550px; display: grid; place-items: center; overflow: hidden; background-color: #f7f7f4; background-image: linear-gradient(45deg,#e8eae5 25%,transparent 25%),linear-gradient(-45deg,#e8eae5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e8eae5 75%),linear-gradient(-45deg,transparent 75%,#e8eae5 75%); background-size: 20px 20px; background-position: 0 0,0 10px,10px -10px,-10px 0; }
 .artboard > img, .svg-preview { display: block; max-width: 82%; max-height: 490px; object-fit: contain; filter: drop-shadow(0 15px 22px rgba(31,48,40,.12)); }
-.svg-preview { width: 82%; height: 490px; display: grid; place-items: center; }
+.svg-preview { position: relative; width: 82%; height: 490px; display: grid; place-items: center; }
+.svg-artwork { position: absolute; inset: 0; display: grid; place-items: center; }
 .svg-preview svg { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; }
 .svg-preview.showing-selection { filter: drop-shadow(0 15px 22px rgba(31,48,40,.08)); }
+.protection-canvas { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.svg-preview.brush-active .protection-canvas { pointer-events: auto; cursor: crosshair; touch-action: none; }
 .selection-badge { position: absolute; z-index: 2; left: 18px; bottom: 17px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #f2c8c0; border-radius: 8px; color: #a84636; background: rgba(255,247,244,.94); box-shadow: 0 5px 18px rgba(69,43,35,.1); font-size: 9px; font-weight: 850; }
 .artboard.processing::after { content: ""; position: absolute; inset: 0; background: rgba(251,251,248,.68); backdrop-filter: blur(2px); }
 .processing-badge { position: absolute; z-index: 2; display: flex; align-items: center; gap: 7px; padding: 10px 13px; border-radius: 9px; color: var(--green); background: #fff; box-shadow: 0 9px 30px rgba(23,48,36,.14); font-size: 11px; font-weight: 850; }
@@ -158,6 +161,24 @@ button { color: inherit; }
 .merge-button:disabled, .delete-button:disabled { opacity: .42; cursor: not-allowed; }
 .background-tip { margin: 9px 1px 0; color: #89948f; font-size: 8px; line-height: 1.45; }
 .background-tip b { color: #9b4b3b; }
+.brush-panel { margin-top: 13px; padding: 11px; border: 1px solid #e1e6e2; border-radius: 10px; background: #fafbf9; }
+.brush-panel.active { border-color: #a9cdbc; background: #f3faf6; }
+.brush-heading { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+.brush-heading strong, .brush-heading span { display: block; }
+.brush-heading strong { color: #405149; font-size: 10px; }
+.brush-heading span { max-width: 210px; margin-top: 4px; color: #87938d; font-size: 8px; line-height: 1.4; }
+.brush-heading button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 9px; border: 1px solid #cbd8d1; border-radius: 8px; color: #607168; background: #fff; cursor: pointer; font-size: 8px; font-weight: 850; white-space: nowrap; }
+.brush-heading button.active { color: #fff; border-color: var(--green); background: var(--green); }
+.brush-heading button:disabled { opacity: .4; cursor: not-allowed; }
+.brush-tools { display: grid; grid-template-columns: 1fr 1fr .8fr; gap: 5px; margin-top: 11px; }
+.brush-tools button { padding: 7px 4px; border: 1px solid #d9e0dc; border-radius: 7px; color: #65756d; background: #fff; cursor: pointer; font-size: 8px; font-weight: 800; }
+.brush-tools button.active { color: var(--green); border-color: #86b6a0; background: #e8f5ee; }
+.brush-tools button:disabled { opacity: .4; cursor: not-allowed; }
+.brush-size { display: grid; grid-template-columns: auto 1fr 37px; align-items: center; gap: 7px; margin-top: 10px; color: #65756d; font-size: 8px; font-weight: 750; }
+.brush-size input { width: 100%; accent-color: var(--green); }
+.brush-size output { text-align: right; color: #52645b; }
+.brush-panel > p { margin: 9px 0 0; color: #718178; font-size: 8px; line-height: 1.45; }
+.brush-panel > p i { width: 7px; height: 7px; display: inline-block; margin-right: 3px; border-radius: 50%; background: rgba(29,151,116,.65); }
 .export-next { margin-top: 9px; }
 
 /* Crop and export */
@@ -201,6 +222,18 @@ button { color: inherit; }
 .primary-download { color: #fff; border: 1px solid var(--green); background: var(--green); }
 .download-message { margin: 10px 0 0; padding: 8px 9px; border-radius: 7px; color: #356b54; background: #edf8f2; font-size: 9px; font-weight: 750; }
 .download-message.error { color: #a33c2b; background: #fff0eb; }
+.object-export-panel { margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--line); }
+.object-export-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.object-export-heading p { max-width: 230px; margin: 5px 0 0; color: #839089; font-size: 8px; line-height: 1.45; }
+.object-export-heading svg { color: var(--green); }
+.object-export-list { display: grid; gap: 6px; margin-top: 10px; }
+.object-export-row { display: grid; grid-template-columns: 1fr 53px 69px; align-items: center; gap: 6px; padding: 7px; border: 1px solid #e5e9e6; border-radius: 8px; background: #fafbf9; }
+.object-export-row > span { min-width: 0; display: grid; grid-template-columns: 21px 1fr; align-items: center; color: #506159; font-size: 8px; font-weight: 800; }
+.object-export-row > span b { grid-row: 1 / 3; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--green); font-size: 7px; }
+.object-export-row > span small { color: #8d9892; font-size: 7px; font-weight: 650; }
+.object-export-row button { padding: 7px 3px; border: 1px solid #b7ccbf; border-radius: 7px; color: var(--green); background: #fff; cursor: pointer; font-size: 8px; font-weight: 850; }
+.object-export-row button:last-child { color: #fff; border-color: var(--green); background: var(--green); }
+.object-export-row button:disabled { opacity: .5; cursor: wait; }
 
 @media (max-width: 980px) {
   .workflow-header { align-items: flex-start; flex-direction: column; }

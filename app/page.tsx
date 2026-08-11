@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowLeft,
   Check,
@@ -15,6 +15,7 @@ import {
   LockKeyhole,
   Layers3,
   Merge,
+  Paintbrush,
   Redo2,
   RotateCcw,
   ShieldCheck,
@@ -36,6 +37,7 @@ import {
   downloadPng,
   downloadText,
   formatBytes,
+  getSeparateObjectBounds,
   getVisibleBounds,
   hexToRgb,
   highlightSvg,
@@ -64,6 +66,7 @@ const presets = {
 
 type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
 type ViewMode = "original" | "reduced" | "vector";
+type BrushTool = "protect" | "unprotect";
 
 function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
@@ -71,6 +74,11 @@ function cleanFilename(name: string) {
 
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const protectionCanvas = useRef<HTMLCanvasElement>(null);
+  const protectedMask = useRef(new Uint8Array());
+  const brushing = useRef(false);
+  const lastBrushPoint = useRef<{ x: number; y: number } | null>(null);
   const history = useRef<Snapshot[]>([]);
   const historyIndex = useRef(-1);
   const initialPalette = useRef<PaletteColor[]>([]);
@@ -89,10 +97,21 @@ export default function Home() {
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [pngScale, setPngScale] = useState(2);
-  const [exportState, setExportState] = useState<"" | "svg" | "png">("");
+  const [exportState, setExportState] = useState("");
   const [exportMessage, setExportMessage] = useState("");
+  const [brushMode, setBrushMode] = useState(false);
+  const [brushTool, setBrushTool] = useState<BrushTool>("protect");
+  const [brushSize, setBrushSize] = useState(42);
+  const [protectedCount, setProtectedCount] = useState(0);
+  const [maskRevision, setMaskRevision] = useState(0);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
+
+  const clearProtection = useCallback(() => {
+    protectedMask.current = new Uint8Array(result?.pixelMap.length ?? 0);
+    setProtectedCount(0);
+    setMaskRevision((current) => current + 1);
+  }, [result?.pixelMap.length]);
 
   const pushHistory = useCallback((next: VectorResult) => {
     const snapshots = history.current.slice(0, historyIndex.current + 1);
@@ -115,6 +134,10 @@ export default function Home() {
       historyIndex.current = -1;
       setHistoryStatus({ index: -1, length: 0 });
       setSelectedColors([]);
+      setBrushMode(false);
+      protectedMask.current = new Uint8Array();
+      setProtectedCount(0);
+      setMaskRevision((current) => current + 1);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "We couldn't read this image.");
     } finally {
@@ -136,6 +159,10 @@ export default function Home() {
       pushHistory(converted);
       setViewMode("vector");
       setPreset("original");
+      protectedMask.current = new Uint8Array(converted.pixelMap.length);
+      setProtectedCount(0);
+      setBrushMode(false);
+      setMaskRevision((current) => current + 1);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Vector conversion failed.");
     } finally {
@@ -170,18 +197,134 @@ export default function Home() {
     if (!result || selectedColors.length < 2) return;
     await commitResult(mergeResult(result, selectedColors, cleanup));
     setSelectedColors([]);
-  }, [cleanup, commitResult, result, selectedColors]);
+    clearProtection();
+  }, [cleanup, clearProtection, commitResult, result, selectedColors]);
 
   const deleteSelected = useCallback(async () => {
     if (!result || !selectedColors.length || selectedColors.length >= result.palette.length) return;
-    await commitResult(deleteColors(result, selectedColors, cleanup));
+    await commitResult(deleteColors(result, selectedColors, cleanup, protectedMask.current));
     setSelectedColors([]);
-  }, [cleanup, commitResult, result, selectedColors]);
+    setBrushMode(false);
+    clearProtection();
+  }, [cleanup, clearProtection, commitResult, result, selectedColors]);
 
   const toggleColorSelection = useCallback((index: number) => {
     setViewMode("vector");
+    setBrushMode(false);
     setSelectedColors((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index]);
   }, []);
+
+  const renderProtectionPatch = useCallback((minX: number, minY: number, maxX: number, maxY: number) => {
+    if (!result || !protectionCanvas.current) return;
+    const context = protectionCanvas.current.getContext("2d");
+    if (!context) return;
+    const width = Math.max(1, maxX - minX + 1);
+    const height = Math.max(1, maxY - minY + 1);
+    const patch = context.createImageData(width, height);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const sourcePixel = (minY + y) * result.width + minX + x;
+        if (!protectedMask.current[sourcePixel]) continue;
+        const offset = (y * width + x) * 4;
+        patch.data[offset] = 29;
+        patch.data[offset + 1] = 151;
+        patch.data[offset + 2] = 116;
+        patch.data[offset + 3] = 145;
+      }
+    }
+    context.putImageData(patch, minX, minY);
+  }, [result]);
+
+  const brushAt = useCallback((x: number, y: number) => {
+    if (!result || !selectedColors.length) return;
+    const selected = new Set(selectedColors);
+    const radius = Math.max(2, brushSize / 2);
+    const minX = Math.max(0, Math.floor(x - radius));
+    const minY = Math.max(0, Math.floor(y - radius));
+    const maxX = Math.min(result.width - 1, Math.ceil(x + radius));
+    const maxY = Math.min(result.height - 1, Math.ceil(y + radius));
+    let countDelta = 0;
+
+    for (let pixelY = minY; pixelY <= maxY; pixelY += 1) {
+      for (let pixelX = minX; pixelX <= maxX; pixelX += 1) {
+        const dx = pixelX - x;
+        const dy = pixelY - y;
+        if (dx * dx + dy * dy > radius * radius) continue;
+        const pixel = pixelY * result.width + pixelX;
+        if (!selected.has(result.pixelMap[pixel])) continue;
+        const nextValue = brushTool === "protect" ? 1 : 0;
+        if (protectedMask.current[pixel] === nextValue) continue;
+        protectedMask.current[pixel] = nextValue;
+        countDelta += nextValue ? 1 : -1;
+      }
+    }
+    if (countDelta) setProtectedCount((current) => Math.max(0, current + countDelta));
+    renderProtectionPatch(minX, minY, maxX, maxY);
+  }, [brushSize, brushTool, renderProtectionPatch, result, selectedColors]);
+
+  const pointerToImage = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!result || !previewRef.current) return null;
+    const bounds = previewRef.current.getBoundingClientRect();
+    const imageRatio = result.width / result.height;
+    const boxRatio = bounds.width / bounds.height;
+    const renderedWidth = imageRatio > boxRatio ? bounds.width : bounds.height * imageRatio;
+    const renderedHeight = imageRatio > boxRatio ? bounds.width / imageRatio : bounds.height;
+    const left = bounds.left + (bounds.width - renderedWidth) / 2;
+    const top = bounds.top + (bounds.height - renderedHeight) / 2;
+    const x = ((event.clientX - left) / renderedWidth) * result.width;
+    const y = ((event.clientY - top) / renderedHeight) * result.height;
+    if (x < 0 || y < 0 || x >= result.width || y >= result.height) return null;
+    return { x, y };
+  }, [result]);
+
+  const continueBrush = useCallback((point: { x: number; y: number }) => {
+    const previous = lastBrushPoint.current;
+    if (!previous) {
+      brushAt(point.x, point.y);
+      lastBrushPoint.current = point;
+      return;
+    }
+    const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(2, brushSize / 5)));
+    for (let step = 1; step <= steps; step += 1) {
+      const progress = step / steps;
+      brushAt(previous.x + (point.x - previous.x) * progress, previous.y + (point.y - previous.y) * progress);
+    }
+    lastBrushPoint.current = point;
+  }, [brushAt, brushSize]);
+
+  const startBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!brushMode) return;
+    const point = pointerToImage(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    brushing.current = true;
+    lastBrushPoint.current = null;
+    continueBrush(point);
+  }, [brushMode, continueBrush, pointerToImage]);
+
+  const moveBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!brushing.current) return;
+    const point = pointerToImage(event);
+    if (point) continueBrush(point);
+  }, [continueBrush, pointerToImage]);
+
+  const stopBrush = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    brushing.current = false;
+    lastBrushPoint.current = null;
+  }, []);
+
+  useEffect(() => {
+    const canvas = protectionCanvas.current;
+    if (!canvas || !result) return;
+    canvas.width = result.width;
+    canvas.height = result.height;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.clearRect(0, 0, result.width, result.height);
+    renderProtectionPatch(0, 0, result.width - 1, result.height - 1);
+  }, [maskRevision, renderProtectionPatch, result, viewMode]);
 
   const applyChosenPreset = useCallback(async () => {
     if (!result) return;
@@ -206,7 +349,8 @@ export default function Home() {
     const restoredBase = { ...result, pixelMap: snapshot.pixelMap.slice() };
     setResult(recolorResult(restoredBase, snapshot.palette.map((color) => ({ ...color })), cleanup));
     setSelectedColors([]);
-  }, [cleanup, result]);
+    clearProtection();
+  }, [cleanup, clearProtection, result]);
 
   const openCrop = useCallback(() => {
     if (!result) return;
@@ -230,6 +374,7 @@ export default function Home() {
   }, [result]);
 
   const autoCropBounds = useMemo(() => result ? getVisibleBounds(result) : null, [result]);
+  const separateObjects = useMemo(() => result ? getSeparateObjectBounds(result) : [], [result]);
   const hasTransparentTrim = useMemo(() => !!result && !!autoCropBounds && (
     autoCropBounds.x > 0 || autoCropBounds.y > 0 ||
     autoCropBounds.x + autoCropBounds.width < result.width ||
@@ -284,6 +429,36 @@ export default function Home() {
       setExportState("");
     }
   }, [crop, fileName, pngScale, result]);
+
+  const exportObjectSvg = useCallback(async (objectCrop: CropBox, index: number) => {
+    if (!result) return;
+    const state = `object-svg-${index}`;
+    setExportState(state);
+    setExportMessage("");
+    try {
+      const status = await downloadText(cropSvg(result.svg, objectCrop), `${cleanFilename(fileName)}-object-${index + 1}.svg`, "image/svg+xml");
+      if (status !== "cancelled") setExportMessage(`Object ${index + 1} SVG ${status === "saved" ? "saved" : "download started"}.`);
+    } catch (caught) {
+      setExportMessage(caught instanceof Error ? caught.message : `Object ${index + 1} SVG download failed.`);
+    } finally {
+      setExportState("");
+    }
+  }, [fileName, result]);
+
+  const exportObjectPng = useCallback(async (objectCrop: CropBox, index: number) => {
+    if (!result) return;
+    const state = `object-png-${index}`;
+    setExportState(state);
+    setExportMessage("");
+    try {
+      const status = await downloadPng(result.svg, objectCrop, pngScale, `${cleanFilename(fileName)}-object-${index + 1}-${pngScale}x.png`);
+      if (status !== "cancelled") setExportMessage(`Object ${index + 1} PNG ${status === "saved" ? "saved" : "download started"}.`);
+    } catch (caught) {
+      setExportMessage(caught instanceof Error ? caught.message : `Object ${index + 1} PNG download failed.`);
+    } finally {
+      setExportState("");
+    }
+  }, [fileName, pngScale, result]);
 
   const previewSvg = useMemo(() => result ? highlightSvg(result.svg, selectedColors) : "", [result, selectedColors]);
 
@@ -365,7 +540,20 @@ export default function Home() {
             <div className={`artboard ${busy ? "processing" : ""}`}>
               {viewMode === "original" && <img src={source?.previewUrl} alt="Original artwork" />}
               {viewMode === "reduced" && <img src={result.previewUrl} alt="Color-reduced artwork" />}
-              {viewMode === "vector" && <div className={`svg-preview ${selectedColors.length ? "showing-selection" : ""}`} aria-label="SVG preview" dangerouslySetInnerHTML={{ __html: previewSvg }} />}
+              {viewMode === "vector" && (
+                <div ref={previewRef} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
+                  <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+                  <canvas
+                    ref={protectionCanvas}
+                    className="protection-canvas"
+                    aria-label="Brush over highlighted color areas to exclude them from deletion"
+                    onPointerDown={startBrush}
+                    onPointerMove={moveBrush}
+                    onPointerUp={stopBrush}
+                    onPointerCancel={stopBrush}
+                  />
+                </div>
+              )}
               {!!selectedColors.length && !busy && <span className="selection-badge"><Eye size={14}/>{selectedColors.length} color{selectedColors.length > 1 ? "s" : ""} highlighted</span>}
               {busy && <span className="processing-badge"><Sparkles size={15}/> Updating vector…</span>}
             </div>
@@ -374,7 +562,7 @@ export default function Home() {
               <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
               <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
-              <span><Layers3 size={16}/><b>Largest first</b> layers</span>
+              <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
             </div>
           </div>
@@ -402,6 +590,23 @@ export default function Home() {
                   <button className="lock-button" aria-label={color.locked ? `Unlock ${color.hex}` : `Lock ${color.hex}`} type="button" onClick={() => toggleLock(index)}>{color.locked ? <Lock size={14}/> : <Unlock size={14}/>}</button>
                 </div>
               ))}
+            </div>
+            <div className={`brush-panel ${brushMode ? "active" : ""}`}>
+              <div className="brush-heading">
+                <div><strong>Keep-area brush</strong><span>Brush parts of the selected color that must not be deleted.</span></div>
+                <button className={brushMode ? "active" : ""} type="button" disabled={!selectedColors.length || busy} onClick={() => { setViewMode("vector"); setBrushMode((current) => !current); }}><Paintbrush size={14}/>{brushMode ? "Brush on" : "Use brush"}</button>
+              </div>
+              {brushMode && (
+                <>
+                  <div className="brush-tools">
+                    <button className={brushTool === "protect" ? "active" : ""} type="button" onClick={() => setBrushTool("protect")}>Keep</button>
+                    <button className={brushTool === "unprotect" ? "active" : ""} type="button" onClick={() => setBrushTool("unprotect")}>Undo brush</button>
+                    <button type="button" disabled={!protectedCount} onClick={clearProtection}>Clear</button>
+                  </div>
+                  <label className="brush-size"><span>Brush size</span><input type="range" min="8" max="180" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/><output>{brushSize}px</output></label>
+                  <p><i/> Teal areas are protected and will stay when you choose Delete selected. Drag across the preview with your mouse or finger.</p>
+                </>
+              )}
             </div>
             <div className="palette-actions">
               <button className="merge-button" type="button" disabled={selectedColors.length < 2 || busy} onClick={() => void mergeSelected()}><Merge size={16}/>Merge {selectedColors.length || "selected"}</button>
@@ -446,6 +651,20 @@ export default function Home() {
                   <p>{Math.round(crop.width * pngScale)} × {Math.round(crop.height * pngScale)} px</p>
                 </div>
                 <div className="download-buttons"><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportSvg()}><Download size={16}/>{exportState === "svg" ? "Saving…" : "SVG"}</button><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportPng()}><Download size={16}/>{exportState === "png" ? "Rendering…" : `PNG ${pngScale}×`}</button></div>
+                {separateObjects.length > 1 && (
+                  <div className="object-export-panel">
+                    <div className="object-export-heading"><div><label className="control-label">Separate objects</label><p>{separateObjects.length} disconnected objects detected. Save each with its own fitted canvas.</p></div><Layers3 size={17}/></div>
+                    <div className="object-export-list">
+                      {separateObjects.map((objectCrop, index) => (
+                        <div className="object-export-row" key={`${objectCrop.x}-${objectCrop.y}-${index}`}>
+                          <span><b>{index + 1}</b>Object {index + 1}<small>{Math.round(objectCrop.width)} × {Math.round(objectCrop.height)}</small></span>
+                          <button type="button" disabled={!!exportState} onClick={() => void exportObjectSvg(objectCrop, index)}>{exportState === `object-svg-${index}` ? "Saving…" : "SVG"}</button>
+                          <button type="button" disabled={!!exportState} onClick={() => void exportObjectPng(objectCrop, index)}>{exportState === `object-png-${index}` ? "Rendering…" : `PNG ${pngScale}×`}</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {exportMessage && <p className={`download-message ${exportMessage.toLowerCase().includes("failed") ? "error" : ""}`} role="status">{exportMessage}</p>}
               </div>
             </div>

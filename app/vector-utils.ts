@@ -232,6 +232,76 @@ function smoothIndexedMap(width: number, height: number, source: Uint8Array, cle
   return current;
 }
 
+function removeTinyComponents(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+  const totalPixels = width * height;
+  const minimumArea = {
+    none: 0,
+    light: Math.max(3, Math.round(totalPixels * .000003)),
+    medium: Math.max(12, Math.round(totalPixels * .000015)),
+    strong: Math.max(48, Math.round(totalPixels * .00006)),
+  }[cleanup];
+  if (!minimumArea) return source.slice();
+
+  const output = source.slice();
+  const visited = new Uint8Array(output.length);
+  const component = new Int32Array(output.length);
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],             [1, 0],
+    [-1, 1],  [0, 1],   [1, 1],
+  ] as const;
+
+  for (let start = 0; start < output.length; start += 1) {
+    const colorIndex = output[start];
+    if (visited[start] || colorIndex === TRANSPARENT_INDEX) continue;
+
+    let head = 0;
+    let tail = 0;
+    component[tail++] = start;
+    visited[start] = 1;
+    const boundaryCounts = new Map<number, number>();
+
+    while (head < tail) {
+      const pixel = component[head++];
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      for (const [dx, dy] of neighbors) {
+        const nextX = x + dx;
+        const nextY = y + dy;
+        if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+        const nextPixel = nextY * width + nextX;
+        const nextColor = output[nextPixel];
+        if (nextColor === colorIndex) {
+          if (!visited[nextPixel]) {
+            visited[nextPixel] = 1;
+            component[tail++] = nextPixel;
+          }
+        } else if (dx === 0 || dy === 0) {
+          boundaryCounts.set(nextColor, (boundaryCounts.get(nextColor) ?? 0) + 1);
+        }
+      }
+    }
+
+    if (tail >= minimumArea) continue;
+    let replacement = TRANSPARENT_INDEX;
+    let strongestBoundary = 0;
+    for (const [candidate, count] of boundaryCounts) {
+      if (count > strongestBoundary) {
+        replacement = candidate;
+        strongestBoundary = count;
+      }
+    }
+    for (let index = 0; index < tail; index += 1) output[component[index]] = replacement;
+  }
+
+  return output;
+}
+
+function cleanIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+  const smoothed = smoothIndexedMap(width, height, source, cleanup);
+  return removeTinyComponents(width, height, smoothed, cleanup);
+}
+
 function normalizePalette(
   width: number,
   height: number,
@@ -391,9 +461,9 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     // obvious polygon edges. A low line threshold plus a progressively wider
     // quadratic threshold keeps fewer anchors while joining them with curves.
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .25, maximumDimension: 1400 },
-    light: { pathOmit: 5, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
-    medium: { pathOmit: 11, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
-    strong: { pathOmit: 22, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
+    light: { pathOmit: 8, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
+    medium: { pathOmit: 24, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
+    strong: { pathOmit: 64, lineTolerance: .012, curveTolerance: 5.6, blur: 2, blurDelta: 52, stroke: .55, maximumDimension: 900 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -421,6 +491,48 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     pal: tracePalette,
   });
 
+  // A single union silhouette in the dominant color sits behind every color
+  // layer. It closes antialiasing hairlines between neighboring shapes without
+  // adding artificial outlines or changing the visible palette.
+  const silhouetteData = new ImageData(traceImageData.width, traceImageData.height);
+  const dominant = palette[0] ?? { r: 0, g: 0, b: 0 };
+  for (let pixel = 0; pixel < traceImageData.width * traceImageData.height; pixel += 1) {
+    const offset = pixel * 4;
+    if (traceImageData.data[offset + 3] <= 8) continue;
+    silhouetteData.data[offset] = dominant.r;
+    silhouetteData.data[offset + 1] = dominant.g;
+    silhouetteData.data[offset + 2] = dominant.b;
+    silhouetteData.data[offset + 3] = 255;
+  }
+  const silhouetteSvg = ImageTracer.imagedataToSVG(silhouetteData, {
+    ltres: traceSettings.lineTolerance,
+    qtres: traceSettings.curveTolerance,
+    pathomit: traceSettings.pathOmit,
+    rightangleenhance: false,
+    colorsampling: 0,
+    numberofcolors: 2,
+    colorquantcycles: 1,
+    layering: 0,
+    blurradius: traceSettings.blur,
+    blurdelta: traceSettings.blurDelta,
+    strokewidth: Math.max(.75, traceSettings.stroke),
+    linefilter: cleanup !== "none",
+    scale: 1,
+    roundcoords: 2,
+    viewbox: true,
+    desc: true,
+    pal: [{ ...dominant, a: 255 }, { r: 0, g: 0, b: 0, a: 0 }],
+  });
+  const silhouettePaths: string[] = [];
+  for (const match of silhouetteSvg.matchAll(/<path\s+[^>]*desc="l\s+0\s+p\s+\d+"[^>]*\/>/g)) {
+    silhouettePaths.push(curvePathMarkup(match[0]
+      .replace(/\sdesc="[^"]*"/, "")
+      .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" '), cleanup));
+  }
+  const baseLayer = silhouettePaths.length
+    ? `<g id="vector-base-layer" class="vector-layer vector-base-layer" data-base-layer="true" data-color-index="0" data-color="${palette[0]?.hex ?? "#000000"}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${silhouettePaths.join("")}</g>`
+    : "";
+
   const pathsByLayer = palette.map(() => [] as string[]);
   for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
     const layer = Number(match[1]);
@@ -436,7 +548,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const color = palette[index];
     return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${paths.join("")}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" role="img" aria-label="Layered vector artwork">${baseLayer}${layers}</svg>`;
 }
 
 function resultFromParts(
@@ -529,7 +641,7 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
     };
   });
 
-  return resultFromParts(width, height, smoothIndexedMap(width, height, pixelMap, cleanup), alphaMap, palette, cleanup);
+  return resultFromParts(width, height, cleanIndexedMap(width, height, pixelMap, cleanup), alphaMap, palette, cleanup);
 }
 
 export function recolorResult(result: VectorResult, palette: PaletteColor[], cleanup: CleanupLevel) {
@@ -562,26 +674,28 @@ export function mergeResult(result: VectorResult, selected: number[], cleanup: C
   return resultFromParts(result.width, result.height, pixelMap, result.alphaMap, palette, cleanup);
 }
 
-export function deleteColors(result: VectorResult, selected: number[], cleanup: CleanupLevel) {
+export function deleteColors(
+  result: VectorResult,
+  selected: number[],
+  cleanup: CleanupLevel,
+  protectedMask?: Uint8Array,
+) {
   const removed = new Set([...new Set(selected)].filter((index) => result.palette[index] && !result.palette[index].locked));
   if (!removed.size || removed.size >= result.palette.length) return result;
-  const oldToNew = new Map<number, number>();
-  const palette = result.palette.filter((_, index) => !removed.has(index)).map((color, newIndex) => {
-    const oldIndex = result.palette.findIndex((item) => item.id === color.id);
-    oldToNew.set(oldIndex, newIndex);
-    return { ...color };
-  });
-  const pixelMap = new Uint8Array(result.pixelMap.length).fill(TRANSPARENT_INDEX);
+  const pixelMap = result.pixelMap.slice();
+  let deletedPixels = 0;
   result.pixelMap.forEach((oldIndex, pixel) => {
-    if (oldIndex === TRANSPARENT_INDEX || removed.has(oldIndex)) return;
-    pixelMap[pixel] = oldToNew.get(oldIndex) ?? TRANSPARENT_INDEX;
+    if (oldIndex === TRANSPARENT_INDEX || !removed.has(oldIndex) || protectedMask?.[pixel]) return;
+    pixelMap[pixel] = TRANSPARENT_INDEX;
+    deletedPixels += 1;
   });
+  if (!deletedPixels) return result;
   return resultFromParts(
     result.width,
     result.height,
-    smoothIndexedMap(result.width, result.height, pixelMap, cleanup),
+    pixelMap,
     result.alphaMap,
-    palette,
+    result.palette.map((color) => ({ ...color })),
     cleanup,
   );
 }
@@ -593,7 +707,7 @@ export function highlightSvg(svg: string, selected: number[]) {
     const active = chosen.has(Number(rawIndex));
     return `<g${attrs} data-highlighted="${active ? "true" : "false"}">`;
   });
-  const selectionStyle = `<style>.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
+  const selectionStyle = `<style>.vector-base-layer{opacity:0}.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
   return highlighted.replace(/<svg\b([^>]*)>/, `<svg$1>${selectionStyle}`);
 }
 
@@ -654,6 +768,61 @@ export function getVisibleBounds(result: VectorResult, padding = 1): CropBox {
   const right = Math.min(result.width, maxX + 1 + padding);
   const bottom = Math.min(result.height, maxY + 1 + padding);
   return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
+}
+
+export function getSeparateObjectBounds(result: VectorResult, padding = 2): CropBox[] {
+  const visited = new Uint8Array(result.pixelMap.length);
+  const queue = new Int32Array(result.pixelMap.length);
+  const minimumArea = Math.max(24, Math.round(result.width * result.height * .00004));
+  const objects: Array<CropBox & { area: number }> = [];
+
+  for (let start = 0; start < result.pixelMap.length; start += 1) {
+    if (visited[start] || result.pixelMap[start] === TRANSPARENT_INDEX || result.alphaMap[start] <= 8) continue;
+    let head = 0;
+    let tail = 0;
+    let minX = result.width;
+    let minY = result.height;
+    let maxX = -1;
+    let maxY = -1;
+    queue[tail++] = start;
+    visited[start] = 1;
+
+    while (head < tail) {
+      const pixel = queue[head++];
+      const x = pixel % result.width;
+      const y = Math.floor(pixel / result.width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const nextX = x + dx;
+          const nextY = y + dy;
+          if (nextX < 0 || nextY < 0 || nextX >= result.width || nextY >= result.height) continue;
+          const nextPixel = nextY * result.width + nextX;
+          if (visited[nextPixel] || result.pixelMap[nextPixel] === TRANSPARENT_INDEX || result.alphaMap[nextPixel] <= 8) continue;
+          visited[nextPixel] = 1;
+          queue[tail++] = nextPixel;
+        }
+      }
+    }
+
+    if (tail < minimumArea) continue;
+    const x = Math.max(0, minX - padding);
+    const y = Math.max(0, minY - padding);
+    const right = Math.min(result.width, maxX + 1 + padding);
+    const bottom = Math.min(result.height, maxY + 1 + padding);
+    objects.push({ x, y, width: right - x, height: bottom - y, area: tail });
+  }
+
+  return objects.sort((first, second) => second.area - first.area).map((object) => ({
+    x: object.x,
+    y: object.y,
+    width: object.width,
+    height: object.height,
+  }));
 }
 
 export function formatBytes(bytes: number) {
