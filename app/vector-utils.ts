@@ -37,6 +37,7 @@ export type VectorResult = {
   previewUrl: string;
   svg: string;
   pathCount: number;
+  nodeCount: number;
   fileSize: number;
 };
 
@@ -58,6 +59,31 @@ function canvasFromImageData(imageData: ImageData) {
   canvas.height = imageData.height;
   canvas.getContext("2d", { willReadFrequently: true })?.putImageData(imageData, 0, 0);
   return canvas;
+}
+
+function resizeForTracing(imageData: ImageData, maximumDimension: number) {
+  const longestSide = Math.max(imageData.width, imageData.height);
+  if (longestSide <= maximumDimension) {
+    return { imageData, scaleX: 1, scaleY: 1 };
+  }
+
+  const ratio = maximumDimension / longestSide;
+  const width = Math.max(1, Math.round(imageData.width * ratio));
+  const height = Math.max(1, Math.round(imageData.height * ratio));
+  const source = canvasFromImageData(imageData);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return { imageData, scaleX: 1, scaleY: 1 };
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, width, height);
+  return {
+    imageData: context.getImageData(0, 0, width, height),
+    scaleX: imageData.width / width,
+    scaleY: imageData.height / height,
+  };
 }
 
 export function imageDataToUrl(imageData: ImageData) {
@@ -254,20 +280,22 @@ function normalizePalette(
 
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
   const traceSettings = {
-    none: { pathOmit: 0, tolerance: .75, blur: 0, blurDelta: 20, stroke: .15 },
-    light: { pathOmit: 4, tolerance: 1.45, blur: 1, blurDelta: 24, stroke: .35 },
-    medium: { pathOmit: 12, tolerance: 2.4, blur: 2, blurDelta: 34, stroke: .65 },
-    strong: { pathOmit: 28, tolerance: 3.8, blur: 3, blurDelta: 48, stroke: 1 },
+    none: { pathOmit: 1, tolerance: 1.2, blur: 0, blurDelta: 22, stroke: .3, maximumDimension: 1200 },
+    light: { pathOmit: 7, tolerance: 2.4, blur: 1, blurDelta: 30, stroke: .55, maximumDimension: 900 },
+    medium: { pathOmit: 18, tolerance: 4.8, blur: 2, blurDelta: 42, stroke: .85, maximumDimension: 650 },
+    strong: { pathOmit: 38, tolerance: 8.5, blur: 3, blurDelta: 60, stroke: 1.2, maximumDimension: 450 },
   }[cleanup];
-  const hasTransparency = imageData.data.some((value, index) => index % 4 === 3 && value < 10);
+  const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
+  const traceImageData = tracing.imageData;
+  const hasTransparency = traceImageData.data.some((value, index) => index % 4 === 3 && value < 10);
   const tracePalette = palette.map(({ r, g, b }) => ({ r, g, b, a: 255 }));
   if (hasTransparency) tracePalette.push({ r: 0, g: 0, b: 0, a: 0 });
 
-  const rawSvg = ImageTracer.imagedataToSVG(imageData, {
+  const rawSvg = ImageTracer.imagedataToSVG(traceImageData, {
     ltres: traceSettings.tolerance,
     qtres: traceSettings.tolerance,
     pathomit: traceSettings.pathOmit,
-    rightangleenhance: true,
+    rightangleenhance: false,
     colorsampling: 0,
     numberofcolors: tracePalette.length,
     colorquantcycles: 1,
@@ -277,7 +305,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     strokewidth: traceSettings.stroke,
     linefilter: cleanup !== "none",
     scale: 1,
-    roundcoords: 2,
+    roundcoords: 1,
     viewbox: true,
     desc: true,
     pal: tracePalette,
@@ -291,7 +319,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   const layers = pathsByLayer.map((paths, index) => {
     if (!paths.length) return "";
     const color = palette[index];
-    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}">${paths.join("")}</g>`;
+    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${paths.join("")}</g>`;
   }).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
 }
@@ -317,6 +345,7 @@ function resultFromParts(
     previewUrl: imageDataToUrl(imageData),
     svg,
     pathCount: (svg.match(/<path\b/g) ?? []).length,
+    nodeCount: (svg.match(/\b[MLQC]\s/g) ?? []).length,
     fileSize: new Blob([svg], { type: "image/svg+xml" }).size,
   };
 }
@@ -486,6 +515,30 @@ export function cropSvg(svg: string, crop: CropBox) {
   });
   if (!/xmlns=/.test(output.slice(0, 300))) output = output.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
   return output;
+}
+
+export function getVisibleBounds(result: VectorResult, padding = 1): CropBox {
+  let minX = result.width;
+  let minY = result.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let pixel = 0; pixel < result.pixelMap.length; pixel += 1) {
+    if (result.pixelMap[pixel] === TRANSPARENT_INDEX || result.alphaMap[pixel] <= 8) continue;
+    const x = pixel % result.width;
+    const y = Math.floor(pixel / result.width);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  if (maxX < minX || maxY < minY) return { x: 0, y: 0, width: result.width, height: result.height };
+  const x = Math.max(0, minX - padding);
+  const y = Math.max(0, minY - padding);
+  const right = Math.min(result.width, maxX + 1 + padding);
+  const bottom = Math.min(result.height, maxY + 1 + padding);
+  return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
 }
 
 export function formatBytes(bytes: number) {

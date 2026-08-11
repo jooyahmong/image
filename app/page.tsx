@@ -36,6 +36,7 @@ import {
   downloadPng,
   downloadText,
   formatBytes,
+  getVisibleBounds,
   hexToRgb,
   highlightSvg,
   loadRaster,
@@ -48,10 +49,10 @@ import {
 
 const steps = ["Upload", "Colors", "Edit", "Crop", "Export"];
 const cleanupLevels: { value: CleanupLevel; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "light", label: "Light" },
-  { value: "medium", label: "Medium" },
-  { value: "strong", label: "Strong" },
+  { value: "none", label: "Detail" },
+  { value: "light", label: "Clean" },
+  { value: "medium", label: "Smooth" },
+  { value: "strong", label: "Ultra" },
 ];
 const presets = {
   original: { label: "Original palette", colors: [] },
@@ -77,7 +78,7 @@ export default function Home() {
   const [result, setResult] = useState<VectorResult | null>(null);
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
-  const [cleanup, setCleanup] = useState<CleanupLevel>("medium");
+  const [cleanup, setCleanup] = useState<CleanupLevel>("strong");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -228,6 +229,19 @@ export default function Home() {
     setCrop({ x: (result.width - width) / 2, y: (result.height - height) / 2, width, height });
   }, [result]);
 
+  const autoCropBounds = useMemo(() => result ? getVisibleBounds(result) : null, [result]);
+  const hasTransparentTrim = useMemo(() => !!result && !!autoCropBounds && (
+    autoCropBounds.x > 0 || autoCropBounds.y > 0 ||
+    autoCropBounds.x + autoCropBounds.width < result.width ||
+    autoCropBounds.y + autoCropBounds.height < result.height
+  ), [autoCropBounds, result]);
+
+  const autoCrop = useCallback(() => {
+    if (!autoCropBounds) return;
+    setCrop(autoCropBounds);
+    setExportMessage("Transparent outer area cropped automatically.");
+  }, [autoCropBounds]);
+
   const cropInsets = useMemo(() => result ? {
     left: Math.round(crop.x),
     top: Math.round(crop.y),
@@ -331,9 +345,9 @@ export default function Home() {
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <div className="setting-row"><div><label>Clean up</label><small>Remove tiny speckles and short paths</small></div></div>
+            <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer nodes, softer curves, and less detail</small></div></div>
             <div className="segmented">{cleanupLevels.map((level) => <button className={cleanup === level.value ? "selected" : ""} type="button" key={level.value} onClick={() => setCleanup(level.value)}>{level.label}</button>)}</div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Use Medium for AI illustrations. Strong cleanup may remove tiny eyes or text.</p></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra is now the default for clean stock-style artwork. Choose Smooth only when small eyes or lettering must remain.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
@@ -358,6 +372,7 @@ export default function Home() {
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
               <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
+              <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
               <span><Layers3 size={16}/><b>Largest first</b> layers</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
@@ -413,6 +428,10 @@ export default function Home() {
                 <p>The bright area is your final canvas. SVG paths stay fully editable.</p>
               </div>
               <div className="crop-controls">
+                <div className="auto-crop-panel">
+                  <div><label className="control-label">Transparent space</label><p>Fit the canvas to the remaining object after deleting a background color.</p></div>
+                  <button type="button" disabled={!hasTransparentTrim} onClick={autoCrop}><Crop size={14}/>{hasTransparentTrim ? "Auto crop" : "Already fitted"}</button>
+                </div>
                 <label className="control-label">Aspect ratio</label>
                 <div className="ratio-grid"><button type="button" onClick={() => setRatio(null)}>Free</button><button type="button" onClick={() => setRatio(1)}>1:1</button><button type="button" onClick={() => setRatio(4 / 5)}>4:5</button><button type="button" onClick={() => setRatio(3 / 2)}>3:2</button><button type="button" onClick={() => setRatio(210 / 297)}>A4</button></div>
                 <div className="inset-heading"><label className="control-label">Crop edges</label><span>{Math.round(crop.width)} × {Math.round(crop.height)}</span></div>
