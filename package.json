@@ -16,7 +16,6 @@
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
-    "@neplex/vectorizer": "^0.1.0",
     "drizzle-orm": "0.45.2",
     "image-q": "^4.0.0",
     "imagetracerjs": "^1.2.6",
