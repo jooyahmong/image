@@ -26,11 +26,14 @@ import {
   Unlock,
   UploadCloud,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   applyPreset,
   CleanupLevel,
   createVectorResult,
+  cropRasterSource,
   cropSvg,
   CropBox,
   deleteColors,
@@ -49,6 +52,7 @@ import {
   recolorResult,
   VectorResult,
   MAX_VECTOR_OBJECTS,
+  MAX_VECTOR_ANCHORS,
 } from "./vector-utils";
 
 const steps = ["Upload", "Colors", "Edit", "Crop", "Export"];
@@ -98,6 +102,9 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState({ index: -1, length: 0 });
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
+  const [sourceCropOpen, setSourceCropOpen] = useState(false);
+  const [sourceCrop, setSourceCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
+  const [zoom, setZoom] = useState(100);
   const [pngScale, setPngScale] = useState(2);
   const [exportState, setExportState] = useState("");
   const [exportMessage, setExportMessage] = useState("");
@@ -107,6 +114,7 @@ export default function Home() {
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
+  const colorSliderProgress = ((colorCount - 2) / (20 - 2)) * 100;
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
 
@@ -132,6 +140,8 @@ export default function Home() {
       const loaded = await loadRaster(file);
       setFileName(file.name);
       setSource(loaded);
+      setSourceCrop({ x: 0, y: 0, width: loaded.width, height: loaded.height });
+      setSourceCropOpen(false);
       setResult(null);
       history.current = [];
       historyIndex.current = -1;
@@ -161,6 +171,7 @@ export default function Home() {
       historyIndex.current = -1;
       pushHistory(converted);
       setViewMode("vector");
+      setZoom(100);
       setPreset("original");
       protectedMask.current = new Uint8Array(converted.pixelMap.length);
       setProtectedCount(0);
@@ -172,6 +183,35 @@ export default function Home() {
       setBusy(false);
     }
   }, [cleanup, colorCount, pushHistory, source]);
+
+  const openSourceCrop = useCallback(() => {
+    if (!source) return;
+    setSourceCrop({ x: 0, y: 0, width: source.width, height: source.height });
+    setSourceCropOpen(true);
+  }, [source]);
+
+  const sourceCropInsets = useMemo(() => source ? {
+    left: Math.round(sourceCrop.x),
+    top: Math.round(sourceCrop.y),
+    right: Math.max(0, Math.round(source.width - sourceCrop.x - sourceCrop.width)),
+    bottom: Math.max(0, Math.round(source.height - sourceCrop.y - sourceCrop.height)),
+  } : { left: 0, top: 0, right: 0, bottom: 0 }, [source, sourceCrop]);
+
+  const updateSourceCropInset = useCallback((side: "left" | "top" | "right" | "bottom", value: number) => {
+    if (!source) return;
+    const next = { ...sourceCropInsets, [side]: value };
+    const width = Math.max(1, source.width - next.left - next.right);
+    const height = Math.max(1, source.height - next.top - next.bottom);
+    setSourceCrop({ x: next.left, y: next.top, width, height });
+  }, [source, sourceCropInsets]);
+
+  const applySourceCrop = useCallback(() => {
+    if (!source) return;
+    const cropped = cropRasterSource(source, sourceCrop);
+    setSource(cropped);
+    setSourceCrop({ x: 0, y: 0, width: cropped.width, height: cropped.height });
+    setSourceCropOpen(false);
+  }, [source, sourceCrop]);
 
   const commitResult = useCallback(async (next: VectorResult) => {
     setBusy(true);
@@ -505,7 +545,7 @@ export default function Home() {
           <div className="canvas-card">
             <div className="card-heading">
               <div><span className="step-label">STEP 1</span><h2>Upload your artwork</h2></div>
-              {source && <button className="text-button" type="button" onClick={() => fileInput.current?.click()}><RotateCcw size={15}/> Replace</button>}
+              {source && <div className="heading-actions"><button className="text-button" type="button" onClick={openSourceCrop}><Crop size={15}/> Crop first</button><button className="text-button" type="button" onClick={() => fileInput.current?.click()}><RotateCcw size={15}/> Replace</button></div>}
             </div>
             <button
               className={`dropzone ${isDragging ? "dragging" : ""} ${source ? "has-image" : ""}`}
@@ -530,12 +570,21 @@ export default function Home() {
           <aside className="settings-card">
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
-            <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} onChange={(event) => setColorCount(Number(event.target.value))}/>
+            <input
+              id="color-count"
+              className="range-control"
+              type="range"
+              min="2"
+              max="20"
+              value={colorCount}
+              style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }}
+              onChange={(event) => setColorCount(Number(event.target.value))}
+            />
             <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer anchors joined with smooth Bézier curves</small></div></div>
             <div className="segmented">{cleanupLevels.map((level) => <button className={cleanup === level.value ? "selected" : ""} type="button" key={level.value} onClick={() => setCleanup(level.value)}>{level.label}</button>)}</div>
             <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra removes small detail while keeping rounded contours curved. Choose Smooth when small eyes or lettering must remain.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
-            <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
+            <p className="button-hint">Use Crop first to vectorize only the area you want.</p>
           </aside>
         </section>
       ) : (
@@ -546,32 +595,38 @@ export default function Home() {
               <div className="view-tabs" role="tablist" aria-label="Preview mode">
                 {(["original", "reduced", "vector"] as ViewMode[]).map((mode) => <button className={viewMode === mode ? "active" : ""} type="button" role="tab" key={mode} onClick={() => setViewMode(mode)}>{mode === "original" ? "Original" : mode === "reduced" ? "Reduced" : "SVG"}</button>)}
               </div>
-              <span className="zoom-label">FIT</span>
+              <div className="zoom-controls" aria-label="Preview zoom controls">
+                <button type="button" aria-label="Zoom out" disabled={zoom <= 50} onClick={() => setZoom((current) => Math.max(50, current - 25))}><ZoomOut size={15}/></button>
+                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => setZoom(100)}>{zoom}%</button>
+                <button type="button" aria-label="Zoom in" disabled={zoom >= 400} onClick={() => setZoom((current) => Math.min(400, current + 25))}><ZoomIn size={15}/></button>
+              </div>
             </div>
             <div className={`artboard ${busy ? "processing" : ""}`}>
-              {viewMode === "original" && <img src={source?.previewUrl} alt="Original artwork" />}
-              {viewMode === "reduced" && <img src={result.previewUrl} alt="Color-reduced artwork" />}
-              {viewMode === "vector" && (
-                <div ref={previewRef} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
-                  <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
-                  <canvas
-                    ref={protectionCanvas}
-                    className="protection-canvas"
-                    aria-label="Brush over highlighted color areas to exclude them from deletion"
-                    onPointerDown={startBrush}
-                    onPointerMove={moveBrush}
-                    onPointerUp={stopBrush}
-                    onPointerCancel={stopBrush}
-                  />
-                </div>
-              )}
+              <div className="zoom-stage" style={{ width: `${zoom}%`, minHeight: `${Math.round(550 * zoom / 100)}px` }}>
+                {viewMode === "original" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={source?.previewUrl} alt="Original artwork" />}
+                {viewMode === "reduced" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={result.previewUrl} alt="Color-reduced artwork" />}
+                {viewMode === "vector" && (
+                  <div ref={previewRef} style={{ height: `${Math.round(490 * zoom / 100)}px` }} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
+                    <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+                    <canvas
+                      ref={protectionCanvas}
+                      className="protection-canvas"
+                      aria-label="Brush over highlighted color areas to exclude them from deletion"
+                      onPointerDown={startBrush}
+                      onPointerMove={moveBrush}
+                      onPointerUp={stopBrush}
+                      onPointerCancel={stopBrush}
+                    />
+                  </div>
+                )}
+              </div>
               {!!selectedColors.length && !busy && <span className="selection-badge"><Eye size={14}/>{selectedColors.length} color{selectedColors.length > 1 ? "s" : ""} highlighted</span>}
               {busy && <span className="processing-badge"><Sparkles size={15}/> Updating vector…</span>}
             </div>
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
-              <span><Merge size={16}/><b>{result.pathCount}/{MAX_VECTOR_OBJECTS}</b> objects max</span>
-              <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
+              <span><Merge size={16}/><b>{result.pathCount}/{MAX_VECTOR_OBJECTS}</b> actual objects</span>
+              <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}/{MAX_VECTOR_ANCHORS}</b> anchors</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
               <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
@@ -680,6 +735,37 @@ export default function Home() {
                   </div>
                 )}
                 {exportMessage && <p className={`download-message ${exportMessage.toLowerCase().includes("failed") ? "error" : ""}`} role="status">{exportMessage}</p>}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {sourceCropOpen && source && !result && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="crop-modal source-crop-modal" role="dialog" aria-modal="true" aria-labelledby="source-crop-title">
+            <div className="modal-heading"><div><span className="step-label">BEFORE VECTORIZING</span><h2 id="source-crop-title">Crop the original image</h2></div><button aria-label="Close original crop dialog" type="button" onClick={() => setSourceCropOpen(false)}><X size={19}/></button></div>
+            <div className="crop-layout">
+              <div className="crop-preview-wrap">
+                <div className="crop-preview source-crop-preview">
+                  <div className="source-crop-canvas" style={{ aspectRatio: `${source.width} / ${source.height}`, width: source.width / source.height >= 4 / 3 ? "100%" : "auto", height: source.width / source.height >= 4 / 3 ? "auto" : "100%" }}>
+                    <img src={source.previewUrl} alt="Original image crop preview"/>
+                    <div className="crop-frame" style={{ left: `${(sourceCrop.x / source.width) * 100}%`, top: `${(sourceCrop.y / source.height) * 100}%`, width: `${(sourceCrop.width / source.width) * 100}%`, height: `${(sourceCrop.height / source.height) * 100}%` }}/>
+                  </div>
+                </div>
+                <p>Only the bright selected area will be sent to color reduction and vector tracing.</p>
+              </div>
+              <div className="crop-controls">
+                <label className="control-label">Crop edges</label>
+                <p className="source-crop-help">Move each edge inward while checking the selection on the left.</p>
+                {(["left", "top", "right", "bottom"] as const).map((side) => {
+                  const horizontal = side === "left" || side === "right";
+                  const maximum = Math.max(0, Math.floor((horizontal ? source.width : source.height) * .48));
+                  return <label className="inset-control" key={side}><span>{side[0].toUpperCase() + side.slice(1)}</span><input type="range" min="0" max={maximum} value={Math.min(sourceCropInsets[side], maximum)} onChange={(event) => updateSourceCropInset(side, Number(event.target.value))}/><output>{sourceCropInsets[side]}px</output></label>;
+                })}
+                <div className="source-crop-size"><span>Selected size</span><b>{Math.round(sourceCrop.width)} × {Math.round(sourceCrop.height)} px</b></div>
+                <button className="reset-crop" type="button" onClick={() => setSourceCrop({ x: 0, y: 0, width: source.width, height: source.height })}><RotateCcw size={14}/>Reset to full image</button>
+                <div className="source-crop-actions"><button className="secondary-download" type="button" onClick={() => setSourceCropOpen(false)}>Cancel</button><button className="primary-download" type="button" onClick={applySourceCrop}><Crop size={15}/>Use cropped area</button></div>
               </div>
             </div>
           </section>
