@@ -12,6 +12,8 @@ export type PaletteColor = {
   hex: string;
   count: number;
   share: number;
+  edgeShare: number;
+  backgroundCandidate: boolean;
   locked: boolean;
 };
 
@@ -42,6 +44,13 @@ export type CropBox = { x: number; y: number; width: number; height: number };
 
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
+
+type SaveHandle = {
+  createWritable: () => Promise<{
+    write: (data: Blob) => Promise<void>;
+    close: () => Promise<void>;
+  }>;
+};
 
 function canvasFromImageData(imageData: ImageData) {
   const canvas = document.createElement("canvas");
@@ -163,29 +172,128 @@ export function renderPalette(
   return output;
 }
 
+function smoothIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
+  const passes = { none: 0, light: 1, medium: 1, strong: 2 }[cleanup];
+  const minimum = { none: 9, light: 6, medium: 5, strong: 5 }[cleanup];
+  let current = source.slice();
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    const next = current.slice();
+    for (let y = 1; y < height - 1; y += 1) {
+      for (let x = 1; x < width - 1; x += 1) {
+        const offset = y * width + x;
+        const counts = new Map<number, number>();
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) continue;
+            const value = current[(y + dy) * width + x + dx];
+            counts.set(value, (counts.get(value) ?? 0) + 1);
+          }
+        }
+        let dominant = current[offset];
+        let dominantCount = 0;
+        for (const [value, count] of counts) {
+          if (count > dominantCount) {
+            dominant = value;
+            dominantCount = count;
+          }
+        }
+        if (dominant !== current[offset] && dominantCount >= minimum) next[offset] = dominant;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function normalizePalette(
+  width: number,
+  height: number,
+  pixelMap: Uint8Array,
+  palette: PaletteColor[],
+) {
+  const counts = new Array(palette.length).fill(0);
+  const edgeCounts = new Array(palette.length).fill(0);
+  let visible = 0;
+  let visibleEdge = 0;
+
+  for (let pixel = 0; pixel < pixelMap.length; pixel += 1) {
+    const index = pixelMap[pixel];
+    if (index === TRANSPARENT_INDEX || !palette[index]) continue;
+    counts[index] += 1;
+    visible += 1;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+      edgeCounts[index] += 1;
+      visibleEdge += 1;
+    }
+  }
+
+  const order = counts
+    .map((count, index) => ({ count, index }))
+    .filter(({ count }) => count > 0)
+    .sort((a, b) => b.count - a.count);
+  const likelyBackground = edgeCounts.reduce((best, count, index) => count > edgeCounts[best] ? index : best, 0);
+  const backgroundConfidence = visibleEdge ? edgeCounts[likelyBackground] / visibleEdge : 0;
+  const oldToNew = new Map(order.map(({ index }, newIndex) => [index, newIndex]));
+  const normalizedMap = new Uint8Array(pixelMap.length).fill(TRANSPARENT_INDEX);
+  pixelMap.forEach((oldIndex, pixel) => {
+    if (oldIndex !== TRANSPARENT_INDEX) normalizedMap[pixel] = oldToNew.get(oldIndex) ?? TRANSPARENT_INDEX;
+  });
+  const normalizedPalette = order.map(({ index, count }) => ({
+    ...palette[index],
+    count,
+    share: visible ? (count / visible) * 100 : 0,
+    edgeShare: visibleEdge ? (edgeCounts[index] / visibleEdge) * 100 : 0,
+    backgroundCandidate: index === likelyBackground && backgroundConfidence >= .45 && count / Math.max(1, visible) >= .08,
+  }));
+
+  return { pixelMap: normalizedMap, palette: normalizedPalette };
+}
+
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
-  const pathOmit = { none: 0, light: 4, medium: 12, strong: 28 }[cleanup];
+  const traceSettings = {
+    none: { pathOmit: 0, tolerance: .75, blur: 0, blurDelta: 20, stroke: .15 },
+    light: { pathOmit: 4, tolerance: 1.45, blur: 1, blurDelta: 24, stroke: .35 },
+    medium: { pathOmit: 12, tolerance: 2.4, blur: 2, blurDelta: 34, stroke: .65 },
+    strong: { pathOmit: 28, tolerance: 3.8, blur: 3, blurDelta: 48, stroke: 1 },
+  }[cleanup];
   const hasTransparency = imageData.data.some((value, index) => index % 4 === 3 && value < 10);
   const tracePalette = palette.map(({ r, g, b }) => ({ r, g, b, a: 255 }));
   if (hasTransparency) tracePalette.push({ r: 0, g: 0, b: 0, a: 0 });
 
-  return ImageTracer.imagedataToSVG(imageData, {
-    ltres: cleanup === "strong" ? 1.8 : 1,
-    qtres: cleanup === "strong" ? 1.8 : 1,
-    pathomit: pathOmit,
+  const rawSvg = ImageTracer.imagedataToSVG(imageData, {
+    ltres: traceSettings.tolerance,
+    qtres: traceSettings.tolerance,
+    pathomit: traceSettings.pathOmit,
     rightangleenhance: true,
     colorsampling: 0,
     numberofcolors: tracePalette.length,
     colorquantcycles: 1,
     layering: 0,
-    strokewidth: 0,
+    blurradius: traceSettings.blur,
+    blurdelta: traceSettings.blurDelta,
+    strokewidth: traceSettings.stroke,
     linefilter: cleanup !== "none",
     scale: 1,
-    roundcoords: 1,
+    roundcoords: 2,
     viewbox: true,
-    desc: false,
+    desc: true,
     pal: tracePalette,
   });
+
+  const pathsByLayer = palette.map(() => [] as string[]);
+  for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
+    const layer = Number(match[1]);
+    if (pathsByLayer[layer]) pathsByLayer[layer].push(match[0].replace(/\sdesc="[^"]*"/, ""));
+  }
+  const layers = pathsByLayer.map((paths, index) => {
+    if (!paths.length) return "";
+    const color = palette[index];
+    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}">${paths.join("")}</g>`;
+  }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
 }
 
 function resultFromParts(
@@ -196,14 +304,15 @@ function resultFromParts(
   palette: PaletteColor[],
   cleanup: CleanupLevel,
 ): VectorResult {
-  const imageData = renderPalette(width, height, pixelMap, alphaMap, palette);
-  const svg = traceImage(imageData, palette, cleanup);
+  const normalized = normalizePalette(width, height, pixelMap, palette);
+  const imageData = renderPalette(width, height, normalized.pixelMap, alphaMap, normalized.palette);
+  const svg = traceImage(imageData, normalized.palette, cleanup);
   return {
     width,
     height,
-    pixelMap,
+    pixelMap: normalized.pixelMap,
     alphaMap,
-    palette,
+    palette: normalized.palette,
     imageData,
     previewUrl: imageDataToUrl(imageData),
     svg,
@@ -270,11 +379,13 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
       hex: rgbToHex(color.r, color.g, color.b),
       count,
       share: visibleTotal ? (count / visibleTotal) * 100 : 0,
+      edgeShare: 0,
+      backgroundCandidate: false,
       locked: false,
     };
   });
 
-  return resultFromParts(width, height, pixelMap, alphaMap, palette, cleanup);
+  return resultFromParts(width, height, smoothIndexedMap(width, height, pixelMap, cleanup), alphaMap, palette, cleanup);
 }
 
 export function recolorResult(result: VectorResult, palette: PaletteColor[], cleanup: CleanupLevel) {
@@ -305,6 +416,41 @@ export function mergeResult(result: VectorResult, selected: number[], cleanup: C
   });
   palette.forEach((color) => { color.share = visible ? (color.count / visible) * 100 : 0; });
   return resultFromParts(result.width, result.height, pixelMap, result.alphaMap, palette, cleanup);
+}
+
+export function deleteColors(result: VectorResult, selected: number[], cleanup: CleanupLevel) {
+  const removed = new Set([...new Set(selected)].filter((index) => result.palette[index] && !result.palette[index].locked));
+  if (!removed.size || removed.size >= result.palette.length) return result;
+  const oldToNew = new Map<number, number>();
+  const palette = result.palette.filter((_, index) => !removed.has(index)).map((color, newIndex) => {
+    const oldIndex = result.palette.findIndex((item) => item.id === color.id);
+    oldToNew.set(oldIndex, newIndex);
+    return { ...color };
+  });
+  const pixelMap = new Uint8Array(result.pixelMap.length).fill(TRANSPARENT_INDEX);
+  result.pixelMap.forEach((oldIndex, pixel) => {
+    if (oldIndex === TRANSPARENT_INDEX || removed.has(oldIndex)) return;
+    pixelMap[pixel] = oldToNew.get(oldIndex) ?? TRANSPARENT_INDEX;
+  });
+  return resultFromParts(
+    result.width,
+    result.height,
+    smoothIndexedMap(result.width, result.height, pixelMap, cleanup),
+    result.alphaMap,
+    palette,
+    cleanup,
+  );
+}
+
+export function highlightSvg(svg: string, selected: number[]) {
+  if (!selected.length) return svg;
+  const chosen = new Set(selected);
+  const highlighted = svg.replace(/<g\b([^>]*data-color-index="(\d+)"[^>]*)>/g, (match, attrs: string, rawIndex: string) => {
+    const active = chosen.has(Number(rawIndex));
+    return `<g${attrs} data-highlighted="${active ? "true" : "false"}">`;
+  });
+  const selectionStyle = `<style>.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
+  return highlighted.replace(/<svg\b([^>]*)>/, `<svg$1>${selectionStyle}`);
 }
 
 export function applyPreset(result: VectorResult, preset: string[], cleanup: CleanupLevel) {
@@ -348,18 +494,51 @@ export function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function downloadText(content: string, filename: string, type: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+async function requestSaveHandle(filename: string, description: string, mime: string, extension: string) {
+  const picker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<SaveHandle> }).showSaveFilePicker;
+  if (!picker) return { handle: null, cancelled: false };
+  try {
+    const handle = await picker.call(window, {
+      suggestedName: filename,
+      types: [{ description, accept: { [mime]: [extension] } }],
+    });
+    return { handle, cancelled: false };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return { handle: null, cancelled: true };
+    return { handle: null, cancelled: false };
+  }
+}
+
+async function finishDownload(blob: Blob, filename: string, handle: SaveHandle | null) {
+  if (handle) {
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return "saved" as const;
+  }
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  anchor.target = "_blank";
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return "downloaded" as const;
+}
+
+export async function downloadText(content: string, filename: string, type: string) {
+  const choice = await requestSaveHandle(filename, "SVG artwork", type, ".svg");
+  if (choice.cancelled) return "cancelled" as const;
+  return finishDownload(new Blob([content], { type }), filename, choice.handle);
 }
 
 export async function downloadPng(svg: string, crop: CropBox, scale: number, filename: string) {
+  const choice = await requestSaveHandle(filename, "PNG image", "image/png", ".png");
+  if (choice.cancelled) return "cancelled" as const;
   const cropped = cropSvg(svg, crop);
   const blobUrl = URL.createObjectURL(new Blob([cropped], { type: "image/svg+xml" }));
   const image = new Image();
@@ -374,12 +553,5 @@ export async function downloadPng(svg: string, crop: CropBox, scale: number, fil
   canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
   URL.revokeObjectURL(blobUrl);
   const pngBlob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG export failed.")), "image/png"));
-  const url = URL.createObjectURL(pngBlob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return finishDownload(pngBlob, filename, choice.handle);
 }

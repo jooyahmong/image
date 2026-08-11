@@ -8,16 +8,19 @@ import {
   ChevronDown,
   Crop,
   Download,
+  Eye,
   FileImage,
   ImagePlus,
   Lock,
   LockKeyhole,
+  Layers3,
   Merge,
   Redo2,
   RotateCcw,
   ShieldCheck,
   Sparkles,
   SwatchBook,
+  Trash2,
   Undo2,
   Unlock,
   UploadCloud,
@@ -29,10 +32,12 @@ import {
   createVectorResult,
   cropSvg,
   CropBox,
+  deleteColors,
   downloadPng,
   downloadText,
   formatBytes,
   hexToRgb,
+  highlightSvg,
   loadRaster,
   mergeResult,
   PaletteColor,
@@ -83,6 +88,8 @@ export default function Home() {
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [pngScale, setPngScale] = useState(2);
+  const [exportState, setExportState] = useState<"" | "svg" | "png">("");
+  const [exportMessage, setExportMessage] = useState("");
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
 
@@ -164,10 +171,24 @@ export default function Home() {
     setSelectedColors([]);
   }, [cleanup, commitResult, result, selectedColors]);
 
+  const deleteSelected = useCallback(async () => {
+    if (!result || !selectedColors.length || selectedColors.length >= result.palette.length) return;
+    await commitResult(deleteColors(result, selectedColors, cleanup));
+    setSelectedColors([]);
+  }, [cleanup, commitResult, result, selectedColors]);
+
+  const toggleColorSelection = useCallback((index: number) => {
+    setViewMode("vector");
+    setSelectedColors((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index]);
+  }, []);
+
   const applyChosenPreset = useCallback(async () => {
     if (!result) return;
     if (preset === "original") {
-      const restored = result.palette.map((color, index) => color.locked ? color : ({ ...color, ...(initialPalette.current[index] ?? color), locked: color.locked }));
+      const restored = result.palette.map((color) => {
+        const original = initialPalette.current.find((item) => item.id === color.id);
+        return color.locked || !original ? color : ({ ...color, ...original, locked: color.locked });
+      });
       await commitResult(recolorResult(result, restored, cleanup));
       return;
     }
@@ -189,6 +210,7 @@ export default function Home() {
   const openCrop = useCallback(() => {
     if (!result) return;
     setCrop({ x: 0, y: 0, width: result.width, height: result.height });
+    setExportMessage("");
     setCropOpen(true);
   }, [result]);
 
@@ -221,15 +243,35 @@ export default function Home() {
     setCrop({ x: next.left, y: next.top, width, height });
   }, [cropInsets, result]);
 
-  const exportSvg = useCallback(() => {
+  const exportSvg = useCallback(async () => {
     if (!result) return;
-    downloadText(cropSvg(result.svg, crop), `${cleanFilename(fileName)}.svg`, "image/svg+xml");
+    setExportState("svg");
+    setExportMessage("");
+    try {
+      const status = await downloadText(cropSvg(result.svg, crop), `${cleanFilename(fileName)}.svg`, "image/svg+xml");
+      if (status !== "cancelled") setExportMessage(status === "saved" ? "SVG saved successfully." : "SVG download started.");
+    } catch (caught) {
+      setExportMessage(caught instanceof Error ? caught.message : "SVG download failed. Please try again.");
+    } finally {
+      setExportState("");
+    }
   }, [crop, fileName, result]);
 
   const exportPng = useCallback(async () => {
     if (!result) return;
-    await downloadPng(result.svg, crop, pngScale, `${cleanFilename(fileName)}-${pngScale}x.png`);
+    setExportState("png");
+    setExportMessage("");
+    try {
+      const status = await downloadPng(result.svg, crop, pngScale, `${cleanFilename(fileName)}-${pngScale}x.png`);
+      if (status !== "cancelled") setExportMessage(status === "saved" ? `PNG ${pngScale}× saved successfully.` : `PNG ${pngScale}× download started.`);
+    } catch (caught) {
+      setExportMessage(caught instanceof Error ? caught.message : "PNG download failed. Please try again.");
+    } finally {
+      setExportState("");
+    }
   }, [crop, fileName, pngScale, result]);
+
+  const previewSvg = useMemo(() => result ? highlightSvg(result.svg, selectedColors) : "", [result, selectedColors]);
 
   return (
     <main className="app-shell">
@@ -309,13 +351,15 @@ export default function Home() {
             <div className={`artboard ${busy ? "processing" : ""}`}>
               {viewMode === "original" && <img src={source?.previewUrl} alt="Original artwork" />}
               {viewMode === "reduced" && <img src={result.previewUrl} alt="Color-reduced artwork" />}
-              {viewMode === "vector" && <div className="svg-preview" aria-label="SVG preview" dangerouslySetInnerHTML={{ __html: result.svg }} />}
+              {viewMode === "vector" && <div className={`svg-preview ${selectedColors.length ? "showing-selection" : ""}`} aria-label="SVG preview" dangerouslySetInnerHTML={{ __html: previewSvg }} />}
+              {!!selectedColors.length && !busy && <span className="selection-badge"><Eye size={14}/>{selectedColors.length} color{selectedColors.length > 1 ? "s" : ""} highlighted</span>}
               {busy && <span className="processing-badge"><Sparkles size={15}/> Updating vector…</span>}
             </div>
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
               <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
+              <span><Layers3 size={16}/><b>Largest first</b> layers</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
             </div>
           </div>
@@ -332,19 +376,23 @@ export default function Home() {
               <div className="select-wrap"><select aria-label="Palette preset" value={preset} onChange={(event) => setPreset(event.target.value as keyof typeof presets)}>{Object.entries(presets).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}</select><ChevronDown size={14}/></div>
               <button className="secondary-button" type="button" onClick={() => void applyChosenPreset()}>Apply</button>
             </div>
-            <p className="palette-help">Click a swatch to replace that color everywhere.</p>
+            <p className="palette-help"><b>Select a color to highlight its exact area.</b> Select several to compare, merge, or delete them.</p>
             <div className="palette-list">
               {result.palette.map((color, index) => (
                 <div className={`palette-item ${selectedColors.includes(index) ? "selected" : ""}`} key={color.id}>
-                  <button className="select-dot" aria-label={`Select ${color.hex} for merging`} type="button" disabled={color.locked} onClick={() => setSelectedColors((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])}>{selectedColors.includes(index) && <Check size={11}/>}</button>
+                  <button className="select-dot" aria-label={`${selectedColors.includes(index) ? "Hide" : "Highlight"} ${color.hex} area`} type="button" onClick={() => toggleColorSelection(index)}>{selectedColors.includes(index) ? <Check size={11}/> : <Eye size={11}/>}</button>
                   <label className="swatch" style={{ backgroundColor: color.hex }} aria-label={`Change ${color.hex}`}><input type="color" value={color.hex} disabled={color.locked || busy} onChange={(event) => void updateColor(index, event.target.value)}/></label>
-                  <div className="color-meta"><strong>{color.hex}</strong><span>{color.share.toFixed(1)}% of image</span></div>
+                  <button className="color-meta" type="button" onClick={() => toggleColorSelection(index)}><strong>{color.hex}</strong><span>{color.share.toFixed(1)}% of image</span>{color.backgroundCandidate && <em>Likely background</em>}</button>
                   <div className="share-track"><i style={{ width: `${Math.max(3, color.share)}%`, backgroundColor: color.hex }}/></div>
                   <button className="lock-button" aria-label={color.locked ? `Unlock ${color.hex}` : `Lock ${color.hex}`} type="button" onClick={() => toggleLock(index)}>{color.locked ? <Lock size={14}/> : <Unlock size={14}/>}</button>
                 </div>
               ))}
             </div>
-            <button className="merge-button" type="button" disabled={selectedColors.length < 2 || busy} onClick={() => void mergeSelected()}><Merge size={16}/>Merge {selectedColors.length || "selected"} colors</button>
+            <div className="palette-actions">
+              <button className="merge-button" type="button" disabled={selectedColors.length < 2 || busy} onClick={() => void mergeSelected()}><Merge size={16}/>Merge {selectedColors.length || "selected"}</button>
+              <button className="delete-button" type="button" disabled={!selectedColors.length || selectedColors.length >= result.palette.length || busy || selectedColors.every((index) => result.palette[index]?.locked)} onClick={() => void deleteSelected()}><Trash2 size={15}/>Delete selected</button>
+            </div>
+            {result.palette.some((color) => color.backgroundCandidate) && <p className="background-tip">Tip: select <b>Likely background</b>, check the highlighted area, then choose Delete selected.</p>}
             <button className="primary-button export-next" type="button" onClick={openCrop}><Crop size={17}/>Final crop & export</button>
           </aside>
         </section>
@@ -378,7 +426,8 @@ export default function Home() {
                   <div><label className="control-label">PNG size</label><div className="scale-buttons">{[1, 2, 4].map((scale) => <button className={pngScale === scale ? "active" : ""} type="button" key={scale} onClick={() => setPngScale(scale)}>{scale}×</button>)}</div></div>
                   <p>{Math.round(crop.width * pngScale)} × {Math.round(crop.height * pngScale)} px</p>
                 </div>
-                <div className="download-buttons"><button className="secondary-download" type="button" onClick={exportSvg}><Download size={16}/>SVG</button><button className="primary-download" type="button" onClick={() => void exportPng()}><Download size={16}/>PNG {pngScale}×</button></div>
+                <div className="download-buttons"><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportSvg()}><Download size={16}/>{exportState === "svg" ? "Saving…" : "SVG"}</button><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportPng()}><Download size={16}/>{exportState === "png" ? "Rendering…" : `PNG ${pngScale}×`}</button></div>
+                {exportMessage && <p className={`download-message ${exportMessage.toLowerCase().includes("failed") ? "error" : ""}`} role="status">{exportMessage}</p>}
               </div>
             </div>
           </section>

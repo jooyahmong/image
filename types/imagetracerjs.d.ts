@@ -9,6 +9,8 @@ declare module "imagetracerjs" {
     numberofcolors?: number;
     colorquantcycles?: number;
     layering?: number;
+    blurradius?: number;
+    blurdelta?: number;
     strokewidth?: number;
     linefilter?: boolean;
     scale?: number;

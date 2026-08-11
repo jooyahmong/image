@@ -113,6 +113,8 @@ button { color: inherit; }
 .artboard > img, .svg-preview { display: block; max-width: 82%; max-height: 490px; object-fit: contain; filter: drop-shadow(0 15px 22px rgba(31,48,40,.12)); }
 .svg-preview { width: 82%; height: 490px; display: grid; place-items: center; }
 .svg-preview svg { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; }
+.svg-preview.showing-selection { filter: drop-shadow(0 15px 22px rgba(31,48,40,.08)); }
+.selection-badge { position: absolute; z-index: 2; left: 18px; bottom: 17px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #f2c8c0; border-radius: 8px; color: #a84636; background: rgba(255,247,244,.94); box-shadow: 0 5px 18px rgba(69,43,35,.1); font-size: 9px; font-weight: 850; }
 .artboard.processing::after { content: ""; position: absolute; inset: 0; background: rgba(251,251,248,.68); backdrop-filter: blur(2px); }
 .processing-badge { position: absolute; z-index: 2; display: flex; align-items: center; gap: 7px; padding: 10px 13px; border-radius: 9px; color: var(--green); background: #fff; box-shadow: 0 9px 30px rgba(23,48,36,.14); font-size: 11px; font-weight: 850; }
 .stats-bar { min-height: 58px; display: flex; align-items: center; gap: 24px; padding: 12px 20px; color: #7b8781; border-top: 1px solid var(--line); font-size: 10px; }
@@ -130,23 +132,32 @@ button { color: inherit; }
 .select-wrap select { width: 100%; height: 38px; appearance: none; padding: 0 33px 0 11px; border: 1px solid var(--line); border-radius: 9px; outline: none; color: var(--ink); background: #fff; font-size: 10px; font-weight: 750; }
 .select-wrap svg { position: absolute; right: 10px; top: 50%; color: #839089; pointer-events: none; transform: translateY(-50%); }
 .secondary-button { padding: 0 13px; border: 1px solid #bad2c7; border-radius: 9px; color: var(--green); background: var(--mint); cursor: pointer; font-size: 10px; font-weight: 850; }
-.palette-help { margin: 13px 0 9px; color: #84908a; font-size: 9px; }
+.palette-help { margin: 13px 0 9px; color: #84908a; font-size: 9px; line-height: 1.5; }
+.palette-help b { color: #4f6158; }
 .palette-list { max-height: 420px; overflow-y: auto; padding: 2px 3px 2px 0; scrollbar-width: thin; }
 .palette-item { display: grid; grid-template-columns: 22px 42px 82px 1fr 28px; align-items: center; gap: 8px; min-height: 58px; padding: 7px 4px 7px 7px; border-bottom: 1px solid #eef0ed; border-radius: 8px; }
 .palette-item.selected { background: #f1f8f4; }
-.select-dot { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 1px solid #cbd3ce; border-radius: 50%; color: #fff; background: #fff; cursor: pointer; }
+.select-dot { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid #cbd3ce; border-radius: 50%; color: #84908a; background: #fff; cursor: pointer; }
 .palette-item.selected .select-dot { border-color: var(--green); background: var(--green); }
+.palette-item.selected .select-dot { color: #fff; }
 .select-dot:disabled { opacity: .35; cursor: not-allowed; }
 .swatch { width: 40px; height: 40px; display: block; overflow: hidden; border: 3px solid #fff; border-radius: 10px; box-shadow: 0 0 0 1px #dfe3df,0 3px 8px rgba(27,45,36,.08); cursor: pointer; }
 .swatch input { width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.color-meta { min-width: 0; padding: 0; border: 0; text-align: left; background: transparent; cursor: pointer; }
 .color-meta strong { display: block; color: #31423b; font-size: 10px; letter-spacing: .02em; }
 .color-meta span { display: block; margin-top: 4px; color: #9aa39f; font-size: 8px; }
+.color-meta em { display: inline-block; margin-top: 4px; padding: 3px 5px; border-radius: 5px; color: #9b4b3b; background: #fff0eb; font-size: 7px; font-style: normal; font-weight: 850; white-space: nowrap; }
 .share-track { height: 4px; overflow: hidden; border-radius: 10px; background: #ecefeb; }
 .share-track i { display: block; height: 100%; border-radius: inherit; }
 .lock-button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 7px; color: #7d8983; background: transparent; cursor: pointer; }
 .lock-button:hover { color: var(--green); background: #eef6f1; }
-.merge-button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 14px; padding: 10px; border: 1px solid #dce2de; border-radius: 9px; color: #596961; background: #fff; cursor: pointer; font-size: 10px; font-weight: 800; }
-.merge-button:disabled { opacity: .42; cursor: not-allowed; }
+.palette-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 14px; }
+.merge-button, .delete-button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 5px; border-radius: 9px; cursor: pointer; font-size: 9px; font-weight: 800; }
+.merge-button { border: 1px solid #dce2de; color: #596961; background: #fff; }
+.delete-button { border: 1px solid #efc8c1; color: #a34839; background: #fff8f6; }
+.merge-button:disabled, .delete-button:disabled { opacity: .42; cursor: not-allowed; }
+.background-tip { margin: 9px 1px 0; color: #89948f; font-size: 8px; line-height: 1.45; }
+.background-tip b { color: #9b4b3b; }
 .export-next { margin-top: 9px; }
 
 /* Crop and export */
@@ -181,8 +192,11 @@ button { color: inherit; }
 .scale-buttons button.active { color: #fff; border-color: var(--green); background: var(--green); }
 .download-buttons { display: grid; grid-template-columns: 1fr 1.3fr; gap: 7px; margin-top: 16px; }
 .download-buttons button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 12px 8px; border-radius: 9px; cursor: pointer; font-size: 10px; font-weight: 850; }
+.download-buttons button:disabled { opacity: .55; cursor: wait; }
 .secondary-download { color: var(--green); border: 1px solid #a9c8ba; background: #fff; }
 .primary-download { color: #fff; border: 1px solid var(--green); background: var(--green); }
+.download-message { margin: 10px 0 0; padding: 8px 9px; border-radius: 7px; color: #356b54; background: #edf8f2; font-size: 9px; font-weight: 750; }
+.download-message.error { color: #a33c2b; background: #fff0eb; }
 
 @media (max-width: 980px) {
   .workflow-header { align-items: flex-start; flex-direction: column; }
