@@ -51,11 +51,7 @@ export type ObjectRegion = CropBox & {
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
 export const MAX_VECTOR_OBJECTS = 25;
-export const MAX_VECTOR_ANCHORS = 70;
-// A coloured island normally produces both its own contour and a hole in the
-// colour underneath it. Keeping the raster region budget to roughly half the
-// final SVG budget prevents a "25 layers, hundreds of subpaths" result.
-const MAX_FOREGROUND_COMPONENTS = Math.floor((MAX_VECTOR_OBJECTS - 1) / 2);
+const MAX_FOREGROUND_COMPONENTS = MAX_VECTOR_OBJECTS - 1;
 
 type SaveHandle = {
   createWritable: () => Promise<{
@@ -161,28 +157,6 @@ export async function loadRaster(file: File): Promise<RasterSource> {
     previewUrl: imageDataToUrl(trimmed),
     originalWidth,
     originalHeight,
-  };
-}
-
-export function cropRasterSource(source: RasterSource, crop: CropBox): RasterSource {
-  const x = Math.max(0, Math.min(source.width - 1, Math.floor(crop.x)));
-  const y = Math.max(0, Math.min(source.height - 1, Math.floor(crop.y)));
-  const width = Math.max(1, Math.min(source.width - x, Math.round(crop.width)));
-  const height = Math.max(1, Math.min(source.height - y, Math.round(crop.height)));
-  const imageData = new ImageData(width, height);
-
-  for (let row = 0; row < height; row += 1) {
-    const sourceStart = ((y + row) * source.width + x) * 4;
-    const sourceEnd = sourceStart + width * 4;
-    imageData.data.set(source.imageData.data.subarray(sourceStart, sourceEnd), row * width * 4);
-  }
-
-  return {
-    ...source,
-    width,
-    height,
-    imageData,
-    previewUrl: imageDataToUrl(imageData),
   };
 }
 
@@ -543,7 +517,9 @@ function enforceComponentBudget(
   height: number,
   source: Uint8Array,
   palette: PaletteColor[],
+  cleanup: CleanupLevel,
 ) {
+  if (cleanup !== "strong") return source.slice();
   const output = source.slice();
 
   for (let pass = 0; pass < 4; pass += 1) {
@@ -568,18 +544,14 @@ function enforceComponentBudget(
           bestScore = score;
         }
       }
-      // A component surrounded only by transparency is still mergeable: it is
-      // an isolated fleck and should disappear before tracing. Previously
-      // those pieces were filtered out here and survived every object limit.
-      const canMerge = visibleBoundaries.length > 0 || component.touchesTransparency;
       const intentionalInteriorDetail = replacement !== TRANSPARENT_INDEX &&
         !component.touchesTransparency &&
         visibleBoundaries.length === 1 &&
         component.compactness >= .24 &&
         component.aspectRatio <= 4 &&
         isProtectedColorContrast(palette[component.colorIndex], palette[replacement]);
-      return { component, replacement, intentionalInteriorDetail, canMerge };
-    }).filter(({ canMerge }) => canMerge).sort((first, second) => {
+      return { component, replacement, intentionalInteriorDetail };
+    }).filter(({ replacement }) => replacement !== TRANSPARENT_INDEX).sort((first, second) => {
       if (first.intentionalInteriorDetail !== second.intentionalInteriorDetail) return first.intentionalInteriorDetail ? 1 : -1;
       return first.component.area - second.component.area;
     });
@@ -617,7 +589,7 @@ function cleanIndexedMap(
   // Run component absorption once more so only substantial color masses reach
   // the vector tracer.
   const withoutFinalFringe = removeTinyComponents(width, height, smoothed, cleanup, palette);
-  return enforceComponentBudget(width, height, withoutFinalFringe, palette);
+  return enforceComponentBudget(width, height, withoutFinalFringe, palette, cleanup);
 }
 
 function normalizePalette(
@@ -704,34 +676,8 @@ function reduceCurveAnchors(points: VectorPoint[], cleanup: CleanupLevel) {
   return reduced;
 }
 
-function resampleClosedAnchors(points: VectorPoint[], maximumAnchors: number) {
-  if (points.length <= maximumAnchors) return points;
-  const segmentLengths = points.map((point, index) => distanceBetween(point, points[(index + 1) % points.length]));
-  const perimeter = segmentLengths.reduce((total, length) => total + length, 0);
-  if (!perimeter) return points.slice(0, maximumAnchors);
-  const anchors: VectorPoint[] = [];
-  let segment = 0;
-  let travelled = 0;
-
-  for (let anchor = 0; anchor < maximumAnchors; anchor += 1) {
-    const target = (anchor / maximumAnchors) * perimeter;
-    while (segment < segmentLengths.length - 1 && travelled + segmentLengths[segment] < target) {
-      travelled += segmentLengths[segment];
-      segment += 1;
-    }
-    const start = points[segment];
-    const end = points[(segment + 1) % points.length];
-    const ratio = segmentLengths[segment] ? (target - travelled) / segmentLengths[segment] : 0;
-    anchors.push({ x: start.x + (end.x - start.x) * ratio, y: start.y + (end.y - start.y) * ratio });
-  }
-  return anchors;
-}
-
-function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, maximumAnchors = Number.POSITIVE_INFINITY) {
-  const reduced = reduceCurveAnchors(points, cleanup);
-  const anchors = Number.isFinite(maximumAnchors)
-    ? resampleClosedAnchors(reduced, Math.max(3, Math.floor(maximumAnchors)))
-    : reduced;
+function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel) {
+  const anchors = reduceCurveAnchors(points, cleanup);
   if (anchors.length < 3 || cleanup === "none") return "";
   const smoothing = { light: .74, medium: .9, strong: 1 }[cleanup];
   const cornerLimit = { light: 94, medium: 102, strong: 108 }[cleanup];
@@ -761,75 +707,42 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, maxim
   return commands.join(" ");
 }
 
-type SvgContour = {
-  data: string;
-  area: number;
-  isHole: boolean;
-};
-
-function contourArea(points: VectorPoint[]) {
-  if (points.length < 3) return 0;
-  let area = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const next = points[(index + 1) % points.length];
-    area += current.x * next.y - next.x * current.y;
-  }
-  return Math.abs(area / 2);
-}
-
-function contourPoints(pathData: string) {
+function curvePathData(pathData: string, cleanup: CleanupLevel) {
+  if (cleanup === "none") return pathData;
   const tokens = pathData.match(/[MLQCZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? [];
-  const points: VectorPoint[] = [];
+  const contours: VectorPoint[][] = [];
+  let contour: VectorPoint[] = [];
   let index = 0;
+
+  const finishContour = () => {
+    if (contour.length) contours.push(contour);
+    contour = [];
+  };
+
   while (index < tokens.length) {
     const command = tokens[index++].toUpperCase();
     if (command === "M" || command === "L") {
-      points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+      if (command === "M") finishContour();
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
     } else if (command === "Q") {
       index += 2;
-      points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
     } else if (command === "C") {
       index += 4;
-      points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "Z") {
+      finishContour();
     }
   }
-  return points;
+  finishContour();
+
+  const curved = contours.map((points) => smoothClosedContour(points, cleanup)).filter(Boolean);
+  return curved.length === contours.length && curved.length ? curved.join(" ") : pathData;
 }
 
-function curvedPathContours(path: string, cleanup: CleanupLevel): SvgContour[] {
+function curvedPathData(path: string, cleanup: CleanupLevel) {
   const pathData = path.match(/\sd="([^"]*)"/)?.[1];
-  if (!pathData) return [];
-  const rawContours = pathData.match(/[Mm][^Mm]*/g) ?? [pathData];
-  const prepared = rawContours.map((raw) => {
-    const points = contourPoints(raw);
-    const smoothed = cleanup === "none" ? raw.trim() : smoothClosedContour(points, cleanup);
-    return { data: smoothed || raw.trim(), area: contourArea(points), isHole: false };
-  }).filter((contour) => contour.data && contour.area > 0);
-  if (!prepared.length) return prepared;
-
-  // ImageTracer stores an outer contour followed by any cut-outs in the same
-  // path. The largest contour is the mass; the smaller ones are holes and are
-  // the first candidates to remove when enforcing the final SVG object cap.
-  const outerIndex = prepared.reduce((largest, contour, index) => contour.area > prepared[largest].area ? index : largest, 0);
-  return prepared.map((contour, index) => ({ ...contour, isHole: index !== outerIndex }));
-}
-
-function allocateAnchorBudgets(contours: Array<SvgContour & { score: number }>) {
-  if (!contours.length) return [] as number[];
-  const minimumPerContour = 3;
-  const baseTotal = contours.length * minimumPerContour;
-  let remaining = Math.max(0, MAX_VECTOR_ANCHORS - baseTotal);
-  const weights = contours.map((contour) => Math.max(1, Math.sqrt(contour.area) * Math.log2(2 + contour.score / Math.max(1, contour.area))));
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  const budgets = weights.map((weight) => minimumPerContour + Math.floor(remaining * weight / totalWeight));
-  remaining = MAX_VECTOR_ANCHORS - budgets.reduce((total, budget) => total + budget, 0);
-  const order = weights.map((weight, index) => ({ weight, index })).sort((first, second) => second.weight - first.weight);
-  for (let cursor = 0; remaining > 0; cursor = (cursor + 1) % order.length) {
-    budgets[order[cursor].index] += 1;
-    remaining -= 1;
-  }
-  return budgets;
+  return pathData ? curvePathData(pathData, cleanup) : "";
 }
 
 function compoundPath(pathData: string[], color: string, strokeWidth: number) {
@@ -906,82 +819,24 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     desc: true,
     pal: [{ ...dominant, a: 255 }, { r: 0, g: 0, b: 0, a: 0 }],
   });
-  const silhouetteContours: SvgContour[] = [];
+  const silhouettePaths: string[] = [];
   for (const match of silhouetteSvg.matchAll(/<path\s+[^>]*desc="l\s+0\s+p\s+\d+"[^>]*\/>/g)) {
-    silhouetteContours.push(...curvedPathContours(match[0], cleanup));
+    const pathData = curvedPathData(match[0], cleanup);
+    if (pathData) silhouettePaths.push(pathData);
   }
-
-  type LayerContour = SvgContour & { layer: number; score: number; key: string; base: boolean; distinct: boolean };
-  const allContours: LayerContour[] = silhouetteContours.map((contour, index) => ({
-    ...contour,
-    layer: -1,
-    key: `base-${index}`,
-    base: true,
-    distinct: false,
-    // Keep each substantial outer silhouette before internal cut-outs. The
-    // base closes hairline gaps, so losing a tiny base hole fills rather than
-    // exposes a visible speck.
-    score: contour.area * (contour.isHole ? .04 : 40),
-  }));
-
-  for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
-    const layer = Number(match[1]);
-    if (!palette[layer]) continue;
-    const otherColors = palette.filter((_, index) => index !== layer);
-    const nearestColorDistance = otherColors.reduce((nearest, color) => Math.min(
-      nearest,
-      colorDistance(palette[layer].r, palette[layer].g, palette[layer].b, color),
-    ), Number.POSITIVE_INFINITY);
-    // Distinct small marks such as dark eyes outrank similarly-sized
-    // antialias shades, while area remains the primary signal.
-    const contrastBonus = nearestColorDistance > 150 * 150 ? 5 : nearestColorDistance > 80 * 80 ? 2.4 : 1;
-    const distinct = nearestColorDistance > 80 * 80;
-    const contours = curvedPathContours(match[0], cleanup);
-    contours.forEach((contour, index) => allContours.push({
-      ...contour,
-      layer,
-      key: `layer-${layer}-${match.index ?? 0}-${index}`,
-      base: false,
-      distinct,
-      score: contour.area * contrastBonus * (contour.isHole ? .06 : 1),
-    }));
-  }
-
-  const traceArea = traceImageData.width * traceImageData.height;
-  const minimumContourArea = traceArea * ({ none: .00008, light: .00012, medium: .0002, strong: .00035 }[cleanup]);
-  const largestBaseArea = allContours.filter((contour) => contour.base && !contour.isHole).reduce((largest, contour) => Math.max(largest, contour.area), 0);
-  const substantialContours = allContours.filter((contour) => {
-    if (contour.base && !contour.isHole) return contour.area === largestBaseArea || contour.area >= minimumContourArea;
-    if (contour.isHole) return contour.area >= minimumContourArea * 2.5;
-    return contour.area >= minimumContourArea * (contour.distinct ? .35 : 1);
-  });
-  const maximumContourCount = Math.min(MAX_VECTOR_OBJECTS, Math.floor(MAX_VECTOR_ANCHORS / 3));
-  const selectedKeys = new Set(
-    [...substantialContours]
-      .sort((first, second) => second.score - first.score || second.area - first.area)
-      .slice(0, maximumContourCount)
-      .map((contour) => contour.key),
-  );
-  const selectedContours = allContours.filter((contour) => selectedKeys.has(contour.key));
-  const anchorBudgets = allocateAnchorBudgets(selectedContours);
-  const budgetedContours = selectedContours.map((contour, index) => {
-    const points = contourPoints(contour.data);
-    const curveCleanup = cleanup === "none" ? "light" : cleanup;
-    return {
-      ...contour,
-      data: smoothClosedContour(points, curveCleanup, anchorBudgets[index]) || contour.data,
-    };
-  });
-  const silhouettePaths = budgetedContours.filter((contour) => contour.base).map((contour) => contour.data);
   const basePath = compoundPath(silhouettePaths, palette[0]?.hex ?? "#000000", Math.max(.75, traceSettings.stroke));
   const baseLayer = silhouettePaths.length
     ? `<g id="vector-base-layer" class="vector-layer vector-base-layer" data-base-layer="true" data-color-index="0" data-color="${palette[0]?.hex ?? "#000000"}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${basePath}</g>`
     : "";
 
   const pathsByLayer = palette.map(() => [] as string[]);
-  budgetedContours.forEach((contour) => {
-    if (!contour.base && pathsByLayer[contour.layer]) pathsByLayer[contour.layer].push(contour.data);
-  });
+  for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
+    const layer = Number(match[1]);
+    if (pathsByLayer[layer]) {
+      const pathData = curvedPathData(match[0], cleanup);
+      if (pathData) pathsByLayer[layer].push(pathData);
+    }
+  }
   const layers = pathsByLayer.map((paths, index) => {
     if (!paths.length) return "";
     const color = palette[index];
@@ -1002,8 +857,7 @@ function resultFromParts(
   palette: PaletteColor[],
   cleanup: CleanupLevel,
 ): VectorResult {
-  const budgetedMap = enforceComponentBudget(width, height, pixelMap, palette);
-  const normalized = normalizePalette(width, height, budgetedMap, palette);
+  const normalized = normalizePalette(width, height, pixelMap, palette);
   const imageData = renderPalette(width, height, normalized.pixelMap, alphaMap, normalized.palette);
   const svg = traceImage(imageData, normalized.palette, cleanup);
   return {
@@ -1015,9 +869,7 @@ function resultFromParts(
     imageData,
     previewUrl: imageDataToUrl(imageData),
     svg,
-    // Count Illustrator-visible subpaths, not only our colour-layer wrappers.
-    // Every retained object starts with an SVG moveto command.
-    pathCount: (svg.match(/\bM\s+-?\d/gi) ?? []).length,
+    pathCount: (svg.match(/<path\b/g) ?? []).length,
     nodeCount: (svg.match(/\b[MLQC]\s/g) ?? []).length,
     fileSize: new Blob([svg], { type: "image/svg+xml" }).size,
   };
