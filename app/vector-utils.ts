@@ -278,6 +278,112 @@ function normalizePalette(
   return { pixelMap: normalizedMap, palette: normalizedPalette };
 }
 
+type VectorPoint = { x: number; y: number };
+
+function roundCoordinate(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function distanceBetween(first: VectorPoint, second: VectorPoint) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function interiorAngle(previous: VectorPoint, current: VectorPoint, next: VectorPoint) {
+  const incoming = { x: previous.x - current.x, y: previous.y - current.y };
+  const outgoing = { x: next.x - current.x, y: next.y - current.y };
+  const denominator = Math.hypot(incoming.x, incoming.y) * Math.hypot(outgoing.x, outgoing.y);
+  if (!denominator) return 180;
+  const cosine = Math.max(-1, Math.min(1, (incoming.x * outgoing.x + incoming.y * outgoing.y) / denominator));
+  return Math.acos(cosine) * (180 / Math.PI);
+}
+
+function reduceCurveAnchors(points: VectorPoint[], cleanup: CleanupLevel) {
+  const minimumSpacing = { none: 0, light: .35, medium: .7, strong: 1.1 }[cleanup];
+  const straightAngle = { none: 180, light: 179, medium: 177.5, strong: 175.5 }[cleanup];
+  let reduced = points.filter((point, index) => index === 0 || distanceBetween(points[index - 1], point) > minimumSpacing);
+  if (reduced.length > 2 && distanceBetween(reduced[0], reduced[reduced.length - 1]) <= minimumSpacing) reduced = reduced.slice(0, -1);
+
+  // Remove only anchors that add virtually no curvature. The remaining
+  // anchors are control landmarks, not polygon vertices: curves are fitted
+  // between them in smoothClosedContour().
+  for (let pass = 0; pass < 2 && reduced.length > 4; pass += 1) {
+    reduced = reduced.filter((point, index, current) => {
+      const previous = current[(index - 1 + current.length) % current.length];
+      const next = current[(index + 1) % current.length];
+      return interiorAngle(previous, point, next) < straightAngle;
+    });
+  }
+  return reduced;
+}
+
+function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel) {
+  const anchors = reduceCurveAnchors(points, cleanup);
+  if (anchors.length < 3 || cleanup === "none") return "";
+  const smoothing = { light: .74, medium: .9, strong: 1 }[cleanup];
+  const cornerLimit = { light: 94, medium: 102, strong: 108 }[cleanup];
+  const isCorner = anchors.map((point, index) => interiorAngle(
+    anchors[(index - 1 + anchors.length) % anchors.length],
+    point,
+    anchors[(index + 1) % anchors.length],
+  ) <= cornerLimit);
+  const commands = [`M ${roundCoordinate(anchors[0].x)} ${roundCoordinate(anchors[0].y)}`];
+
+  for (let index = 0; index < anchors.length; index += 1) {
+    const previous = anchors[(index - 1 + anchors.length) % anchors.length];
+    const current = anchors[index];
+    const next = anchors[(index + 1) % anchors.length];
+    const afterNext = anchors[(index + 2) % anchors.length];
+    const firstControl = isCorner[index]
+      ? { x: current.x + (next.x - current.x) / 3, y: current.y + (next.y - current.y) / 3 }
+      : { x: current.x + ((next.x - previous.x) * smoothing) / 6, y: current.y + ((next.y - previous.y) * smoothing) / 6 };
+    const secondControl = isCorner[(index + 1) % anchors.length]
+      ? { x: next.x - (next.x - current.x) / 3, y: next.y - (next.y - current.y) / 3 }
+      : { x: next.x - ((afterNext.x - current.x) * smoothing) / 6, y: next.y - ((afterNext.y - current.y) * smoothing) / 6 };
+    commands.push(
+      `C ${roundCoordinate(firstControl.x)} ${roundCoordinate(firstControl.y)} ${roundCoordinate(secondControl.x)} ${roundCoordinate(secondControl.y)} ${roundCoordinate(next.x)} ${roundCoordinate(next.y)}`,
+    );
+  }
+  commands.push("Z");
+  return commands.join(" ");
+}
+
+function curvePathData(pathData: string, cleanup: CleanupLevel) {
+  if (cleanup === "none") return pathData;
+  const tokens = pathData.match(/[MLQCZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? [];
+  const contours: VectorPoint[][] = [];
+  let contour: VectorPoint[] = [];
+  let index = 0;
+
+  const finishContour = () => {
+    if (contour.length) contours.push(contour);
+    contour = [];
+  };
+
+  while (index < tokens.length) {
+    const command = tokens[index++].toUpperCase();
+    if (command === "M" || command === "L") {
+      if (command === "M") finishContour();
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "Q") {
+      index += 2;
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "C") {
+      index += 4;
+      contour.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    } else if (command === "Z") {
+      finishContour();
+    }
+  }
+  finishContour();
+
+  const curved = contours.map((points) => smoothClosedContour(points, cleanup)).filter(Boolean);
+  return curved.length === contours.length && curved.length ? curved.join(" ") : pathData;
+}
+
+function curvePathMarkup(path: string, cleanup: CleanupLevel) {
+  return path.replace(/\sd="([^"]*)"/, (match, pathData: string) => ` d="${curvePathData(pathData, cleanup)}"`);
+}
+
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
   const traceSettings = {
     // Keep the straight-line threshold deliberately low. ImageTracer tries a
@@ -319,11 +425,10 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
     const layer = Number(match[1]);
     if (pathsByLayer[layer]) {
-      pathsByLayer[layer].push(
-        match[0]
-          .replace(/\sdesc="[^"]*"/, "")
-          .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" '),
-      );
+      const cleanPath = match[0]
+        .replace(/\sdesc="[^"]*"/, "")
+        .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" ');
+      pathsByLayer[layer].push(curvePathMarkup(cleanPath, cleanup));
     }
   }
   const layers = pathsByLayer.map((paths, index) => {
