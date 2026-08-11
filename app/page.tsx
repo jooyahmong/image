@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   FileImage,
+  Hand,
   ImagePlus,
   Lock,
   LockKeyhole,
@@ -51,16 +52,9 @@ import {
   RasterSource,
   recolorResult,
   VectorResult,
-  MAX_VECTOR_OBJECTS,
 } from "./vector-utils";
 
 const steps = ["Upload", "Colors", "Edit", "Crop", "Export"];
-const cleanupLevels: { value: CleanupLevel; label: string }[] = [
-  { value: "none", label: "Detail" },
-  { value: "light", label: "Clean" },
-  { value: "medium", label: "Smooth" },
-  { value: "strong", label: "Ultra" },
-];
 const presets = {
   original: { label: "Original palette", colors: [] },
   coastal: { label: "Coastal", colors: ["#183B4E", "#3F7C85", "#91C8C4", "#E7E2D5", "#F4A261"] },
@@ -78,8 +72,16 @@ function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
 }
 
+function smoothnessToCleanup(value: number): CleanupLevel {
+  if (value <= 0) return "none";
+  if (value < 35) return "light";
+  if (value < 75) return "medium";
+  return "strong";
+}
+
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
+  const artboardRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const sourceCropStage = useRef<HTMLSpanElement>(null);
   const sourceCropDrag = useRef<{
@@ -89,6 +91,13 @@ export default function Home() {
     startCrop: CropBox;
     renderedWidth: number;
     renderedHeight: number;
+  } | null>(null);
+  const panDrag = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
   } | null>(null);
   const protectionCanvas = useRef<HTMLCanvasElement>(null);
   const protectedMask = useRef(new Uint8Array());
@@ -101,7 +110,7 @@ export default function Home() {
   const [result, setResult] = useState<VectorResult | null>(null);
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
-  const [cleanup, setCleanup] = useState<CleanupLevel>("strong");
+  const [smoothness, setSmoothness] = useState(50);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -113,6 +122,8 @@ export default function Home() {
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [sourceCrop, setSourceCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [zoom, setZoom] = useState(100);
+  const [panMode, setPanMode] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [pngScale, setPngScale] = useState(2);
   const [exportState, setExportState] = useState("");
   const [exportMessage, setExportMessage] = useState("");
@@ -123,6 +134,9 @@ export default function Home() {
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
   const colorSliderProgress = ((colorCount - 2) / 18) * 100;
+  const smoothnessProgress = smoothness;
+  const cleanup = smoothnessToCleanup(smoothness);
+  const panEnabled = zoom > 100 && (panMode || !brushMode);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
 
@@ -183,6 +197,7 @@ export default function Home() {
       pushHistory(converted);
       setViewMode("vector");
       setZoom(100);
+      setPanMode(false);
       setPreset("original");
       protectedMask.current = new Uint8Array(converted.pixelMap.length);
       setProtectedCount(0);
@@ -394,6 +409,38 @@ export default function Home() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     brushing.current = false;
     lastBrushPoint.current = null;
+  }, []);
+
+  const startPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const artboard = artboardRef.current;
+    if (!artboard || !panEnabled || busy) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panDrag.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScrollLeft: artboard.scrollLeft,
+      startScrollTop: artboard.scrollTop,
+    };
+    setIsPanning(true);
+  }, [busy, panEnabled]);
+
+  const movePan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const artboard = artboardRef.current;
+    const drag = panDrag.current;
+    if (!artboard || !drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    artboard.scrollLeft = drag.startScrollLeft - (event.clientX - drag.startClientX);
+    artboard.scrollTop = drag.startScrollTop - (event.clientY - drag.startClientY);
+  }, []);
+
+  const stopPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!panDrag.current || panDrag.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    panDrag.current = null;
+    setIsPanning(false);
   }, []);
 
   useEffect(() => {
@@ -640,9 +687,10 @@ export default function Home() {
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <div className="setting-row"><div><label>Vector smoothness</label><small>Fewer anchors joined with smooth Bézier curves</small></div></div>
-            <div className="segmented">{cleanupLevels.map((level) => <button className={cleanup === level.value ? "selected" : ""} type="button" key={level.value} onClick={() => setCleanup(level.value)}>{level.label}</button>)}</div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Tip:</b> Ultra merges similar edge shades toward about 25 color objects per separated illustration. High-contrast eyes, bows, lines, and patterns stay protected.</p></div>
+            <div className="setting-row"><div><label htmlFor="smoothness">Smoothness</label><small>Label cleanup, tracing size, and curve simplification</small></div><span className="value-box">{smoothness}</span></div>
+            <input id="smoothness" className="range-control smoothness-range" type="range" min="0" max="100" value={smoothness} style={{ background: `linear-gradient(90deg, var(--green) 0 ${smoothnessProgress}%, #e9ece8 ${smoothnessProgress}% 100%)` }} onChange={(event) => setSmoothness(Number(event.target.value))}/>
+            <div className="range-labels" aria-hidden="true"><span>Precise</span><span>Balanced</span><span>Smooth</span></div>
+            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> removes one-pixel antialias fringes with a 3×3 label majority pass, traces at a reduced resolution, and keeps useful details editable.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
@@ -655,18 +703,26 @@ export default function Home() {
               <div className="view-tabs" role="tablist" aria-label="Preview mode">
                 {(["original", "reduced", "vector"] as ViewMode[]).map((mode) => <button className={viewMode === mode ? "active" : ""} type="button" role="tab" key={mode} onClick={() => setViewMode(mode)}>{mode === "original" ? "Original" : mode === "reduced" ? "Reduced" : "SVG"}</button>)}
               </div>
-              <div className="zoom-controls" aria-label="Preview zoom controls">
+              <div className="zoom-controls" aria-label="Preview zoom and pan controls">
+                <button className={panMode ? "active" : ""} type="button" aria-label={panMode ? "Return to brush tool" : "Use hand tool to move the canvas"} aria-pressed={panMode} disabled={zoom <= 100} onClick={() => setPanMode((current) => !current)}><Hand size={15}/></button>
                 <button type="button" aria-label="Zoom out" disabled={zoom <= 50} onClick={() => setZoom((current) => Math.max(50, current - 25))}><ZoomOut size={15}/></button>
-                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => setZoom(100)}>{zoom}%</button>
+                <button className="zoom-value" type="button" aria-label="Reset zoom to 100 percent" onClick={() => { setZoom(100); setPanMode(false); }}>{zoom}%</button>
                 <button type="button" aria-label="Zoom in" disabled={zoom >= 400} onClick={() => setZoom((current) => Math.min(400, current + 25))}><ZoomIn size={15}/></button>
               </div>
             </div>
-            <div className={`artboard ${busy ? "processing" : ""}`}>
+            <div
+              ref={artboardRef}
+              className={`artboard ${busy ? "processing" : ""} ${panEnabled ? "pan-ready" : ""} ${isPanning ? "panning" : ""}`}
+              onPointerDown={startPan}
+              onPointerMove={movePan}
+              onPointerUp={stopPan}
+              onPointerCancel={stopPan}
+            >
               <div className="zoom-stage" style={{ width: `${zoom}%`, minHeight: `${Math.round(550 * zoom / 100)}px` }}>
                 {viewMode === "original" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={source?.previewUrl} alt="Original artwork" />}
                 {viewMode === "reduced" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={result.previewUrl} alt="Color-reduced artwork" />}
                 {viewMode === "vector" && (
-                  <div ref={previewRef} style={{ height: `${Math.round(490 * zoom / 100)}px` }} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode ? "brush-active" : ""}`} aria-label="SVG preview">
+                  <div ref={previewRef} style={{ height: `${Math.round(490 * zoom / 100)}px` }} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode && !panMode ? "brush-active" : ""}`} aria-label="SVG preview">
                     <div className="svg-artwork" dangerouslySetInnerHTML={{ __html: previewSvg }} />
                     <canvas
                       ref={protectionCanvas}
@@ -681,12 +737,13 @@ export default function Home() {
                 )}
               </div>
               {!!selectedColors.length && !busy && <span className="selection-badge"><Eye size={14}/>{selectedColors.length} color{selectedColors.length > 1 ? "s" : ""} highlighted</span>}
+              {panEnabled && !isPanning && !busy && <span className="pan-hint"><Hand size={13}/> Drag to move</span>}
               {busy && <span className="processing-badge"><Sparkles size={15}/> Updating vector…</span>}
             </div>
             <div className="stats-bar">
               <span><SwatchBook size={16}/><b>{result.palette.length}</b> colors</span>
-              <span><Merge size={16}/><b>{result.maxArtworkObjectCount}/~{MAX_VECTOR_OBJECTS}</b> max per artwork</span>
-              <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> nodes</span>
+              <span><Merge size={16}/><b>{result.pathCount.toLocaleString()}</b> paths</span>
+              <span><Sparkles size={16}/><b>{result.nodeCount.toLocaleString()}</b> anchors</span>
               <span><FileImage size={16}/><b>{formatBytes(result.fileSize)}</b> SVG</span>
               <span><Layers3 size={16}/><b>Dominant base</b> gap fill</span>
               <span className="dimension-stat">{result.width} × {result.height}px</span>
@@ -720,7 +777,7 @@ export default function Home() {
             <div className={`brush-panel ${brushMode ? "active" : ""}`}>
               <div className="brush-heading">
                 <div><strong>Keep-area brush</strong><span>Brush parts of the selected color that must not be deleted.</span></div>
-                <button className={brushMode ? "active" : ""} type="button" disabled={!selectedColors.length || busy} onClick={() => { setViewMode("vector"); setBrushMode((current) => !current); }}><Paintbrush size={14}/>{brushMode ? "Brush on" : "Use brush"}</button>
+                <button className={brushMode ? "active" : ""} type="button" disabled={!selectedColors.length || busy} onClick={() => { setViewMode("vector"); setPanMode(false); setBrushMode((current) => !current); }}><Paintbrush size={14}/>{brushMode ? "Brush on" : "Use brush"}</button>
               </div>
               {brushMode && (
                 <>
@@ -730,7 +787,7 @@ export default function Home() {
                     <button type="button" disabled={!protectedCount} onClick={clearProtection}>Clear</button>
                   </div>
                   <label className="brush-size"><span>Brush size</span><input type="range" min="8" max="180" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/><output>{brushSize}px</output></label>
-                  <p><i/> Teal areas are protected and will stay when you choose Delete selected. Drag across the preview with your mouse or finger.</p>
+                  <p><i/> Teal areas are protected and will stay when you choose Delete selected. Use the hand button above to move around while zoomed in.</p>
                 </>
               )}
             </div>

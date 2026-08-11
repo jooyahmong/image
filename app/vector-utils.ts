@@ -84,8 +84,10 @@ function resizeForTracing(imageData: ImageData, maximumDimension: number) {
   canvas.height = height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) return { imageData, scaleX: 1, scaleY: 1 };
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
+  // The input is already an exact palette label map. Nearest-neighbor
+  // downsampling keeps those labels discrete instead of recreating blended
+  // antialias colors along every edge.
+  context.imageSmoothingEnabled = false;
   context.drawImage(source, 0, 0, width, height);
   return {
     imageData: context.getImageData(0, 0, width, height),
@@ -242,20 +244,17 @@ function smoothIndexedMap(
   height: number,
   source: Uint8Array,
   cleanup: CleanupLevel,
-  palette: PaletteColor[],
 ) {
   const radii = {
     none: [] as number[],
     light: [1],
-    medium: [1, 1],
+    medium: [1],
     strong: [1, 1],
   }[cleanup];
   let current = source.slice();
 
   for (const radius of radii) {
     const next = current.slice();
-    const minimumDominance = radius === 1 ? 5 : 14;
-    const minimumLead = radius === 1 ? 2 : 4;
     for (let y = radius; y < height - radius; y += 1) {
       for (let x = radius; x < width - radius; x += 1) {
         const offset = y * width + x;
@@ -275,73 +274,14 @@ function smoothIndexedMap(
           }
         }
         const currentCount = counts.get(current[offset]) ?? 0;
-        const protectsDistinctDetail = cleanup === "strong" &&
-          current[offset] !== TRANSPARENT_INDEX &&
-          dominant !== TRANSPARENT_INDEX &&
-          isProtectedColorContrast(palette[current[offset]], palette[dominant]);
-        if (
-          dominant !== current[offset] &&
-          !protectsDistinctDetail &&
-          dominantCount >= minimumDominance &&
-          dominantCount >= currentCount + minimumLead
-        ) next[offset] = dominant;
+        // True label-mode filtering: ties keep the original label. This is
+        // deliberately not an RGB blur, so no new fringe shades are created.
+        if (dominant !== current[offset] && dominantCount > currentCount) next[offset] = dominant;
       }
     }
     current = next;
   }
   return current;
-}
-
-function blurAndSnapIndexedMap(
-  width: number,
-  height: number,
-  source: Uint8Array,
-  alphaMap: Uint8ClampedArray,
-  palette: PaletteColor[],
-  cleanup: CleanupLevel,
-) {
-  if (cleanup !== "medium" && cleanup !== "strong") return source.slice();
-
-  const longestSide = Math.max(width, height);
-  const blurRadius = cleanup === "strong"
-    ? Math.max(.9, Math.min(2, longestSide / 700))
-    : Math.max(.75, Math.min(2, longestSide / 850));
-  const sourceImage = renderPalette(width, height, source, alphaMap, palette);
-  const sourceCanvas = canvasFromImageData(sourceImage);
-  const blurredCanvas = document.createElement("canvas");
-  blurredCanvas.width = width;
-  blurredCanvas.height = height;
-  const context = blurredCanvas.getContext("2d", { willReadFrequently: true });
-  if (!context || !("filter" in context)) return source.slice();
-
-  context.clearRect(0, 0, width, height);
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  context.filter = `blur(${blurRadius.toFixed(2)}px)`;
-  context.drawImage(sourceCanvas, 0, 0);
-  context.filter = "none";
-  const blurred = context.getImageData(0, 0, width, height).data;
-  const output = new Uint8Array(source.length).fill(TRANSPARENT_INDEX);
-
-  for (let pixel = 0; pixel < source.length; pixel += 1) {
-    if (source[pixel] === TRANSPARENT_INDEX || alphaMap[pixel] <= 8) continue;
-    const offset = pixel * 4;
-    let closest = source[pixel];
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < palette.length; index += 1) {
-      const distance = colorDistance(blurred[offset], blurred[offset + 1], blurred[offset + 2], palette[index]);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        closest = index;
-      }
-    }
-    const protectsDistinctDetail = cleanup === "strong" &&
-      closest !== source[pixel] &&
-      isProtectedColorContrast(palette[source[pixel]], palette[closest]);
-    output[pixel] = protectsDistinctDetail ? source[pixel] : closest;
-  }
-
-  return output;
 }
 
 function removeTinyComponents(
@@ -696,23 +636,22 @@ function cleanIndexedMap(
   width: number,
   height: number,
   source: Uint8Array,
-  alphaMap: Uint8ClampedArray,
   palette: PaletteColor[],
   cleanup: CleanupLevel,
 ) {
   if (cleanup === "none") return source.slice();
-  // Blur the indexed color map and snap it straight back to the original
-  // palette. Narrow spikes, dotted antialiasing bands, and one-pixel bridges
-  // lose their local color majority and are absorbed into the nearest large
-  // mass. Colors stay exact because no blended color reaches the SVG.
-  const massOnlyMap = blurAndSnapIndexedMap(width, height, source, alphaMap, palette, cleanup);
-  const withoutIslands = removeTinyComponents(width, height, massOnlyMap, cleanup, palette);
-  const smoothed = smoothIndexedMap(width, height, withoutIslands, cleanup, palette);
+  // Quantization produces a label map. Clean that map before any mask reaches
+  // the tracer: a 3x3 mode pass absorbs isolated antialias assignments without
+  // averaging colors or inventing intermediate shades.
+  const smoothed = smoothIndexedMap(width, height, source, cleanup);
+  const withoutIslands = removeTinyComponents(width, height, smoothed, cleanup, palette);
   // Smoothing can leave a final one-pixel crescent at a former island edge.
   // Run component absorption once more so only substantial color masses reach
   // the vector tracer.
-  const withoutFinalFringe = removeTinyComponents(width, height, smoothed, cleanup, palette);
-  return enforceComponentBudget(width, height, withoutFinalFringe, palette, cleanup);
+  const withoutFinalFringe = removeTinyComponents(width, height, withoutIslands, cleanup, palette);
+  return cleanup === "strong"
+    ? enforceComponentBudget(width, height, withoutFinalFringe, palette, cleanup)
+    : withoutFinalFringe;
 }
 
 function normalizePalette(
@@ -764,7 +703,7 @@ function normalizePalette(
 type VectorPoint = { x: number; y: number };
 
 function roundCoordinate(value: number) {
-  return Number(value.toFixed(2));
+  return Number(value.toFixed(1));
 }
 
 function distanceBetween(first: VectorPoint, second: VectorPoint) {
@@ -879,10 +818,10 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     // line before a spline, so raising both thresholds creates a handful of
     // obvious polygon edges. A low line threshold plus a progressively wider
     // quadratic threshold keeps fewer anchors while joining them with curves.
-    none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .25, maximumDimension: 1400 },
-    light: { pathOmit: 8, lineTolerance: .14, curveTolerance: 1.7, blur: 1, blurDelta: 28, stroke: .35, maximumDimension: 1200 },
-    medium: { pathOmit: 24, lineTolerance: .045, curveTolerance: 3.2, blur: 1, blurDelta: 38, stroke: .45, maximumDimension: 1000 },
-    strong: { pathOmit: 18, lineTolerance: .025, curveTolerance: 3.8, blur: 1, blurDelta: 42, stroke: .5, maximumDimension: 1000 },
+    none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .2, maximumDimension: 1600 },
+    light: { pathOmit: 5, lineTolerance: .3, curveTolerance: 1.35, blur: 0, blurDelta: 28, stroke: .25, maximumDimension: 1400 },
+    medium: { pathOmit: 8, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, maximumDimension: 1200 },
+    strong: { pathOmit: 14, lineTolerance: .12, curveTolerance: 2.7, blur: 0, blurDelta: 38, stroke: .35, maximumDimension: 800 },
   }[cleanup];
   const tracing = resizeForTracing(imageData, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
@@ -904,7 +843,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     strokewidth: traceSettings.stroke,
     linefilter: cleanup !== "none",
     scale: 1,
-    roundcoords: 2,
+    roundcoords: 1,
     viewbox: true,
     desc: true,
     pal: tracePalette,
@@ -937,7 +876,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     strokewidth: Math.max(.75, traceSettings.stroke),
     linefilter: cleanup !== "none",
     scale: 1,
-    roundcoords: 2,
+    roundcoords: 1,
     viewbox: true,
     desc: true,
     pal: [{ ...dominant, a: 255 }, { r: 0, g: 0, b: 0, a: 0 }],
@@ -982,7 +921,20 @@ function resultFromParts(
 ): VectorResult {
   const normalized = normalizePalette(width, height, pixelMap, palette);
   const imageData = renderPalette(width, height, normalized.pixelMap, alphaMap, normalized.palette);
-  const svg = traceImage(imageData, normalized.palette, cleanup);
+  // Binary alpha keeps the original PNG's semitransparent edge pixels from
+  // becoming a second noisy contour during tracing.
+  const traceReady = new ImageData(width, height);
+  for (let pixel = 0; pixel < normalized.pixelMap.length; pixel += 1) {
+    const colorIndex = normalized.pixelMap[pixel];
+    if (colorIndex === TRANSPARENT_INDEX || !normalized.palette[colorIndex]) continue;
+    const offset = pixel * 4;
+    const color = normalized.palette[colorIndex];
+    traceReady.data[offset] = color.r;
+    traceReady.data[offset + 1] = color.g;
+    traceReady.data[offset + 2] = color.b;
+    traceReady.data[offset + 3] = 255;
+  }
+  const svg = traceImage(traceReady, normalized.palette, cleanup);
   const artworkStats = artworkComponentCounts(width, height, normalized.pixelMap);
   return {
     width,
@@ -993,7 +945,7 @@ function resultFromParts(
     imageData,
     previewUrl: imageDataToUrl(imageData),
     svg,
-    pathCount: (svg.match(/<path\b/g) ?? []).length,
+    pathCount: (svg.match(/\bM\s/g) ?? []).length,
     nodeCount: (svg.match(/\b[MLQC]\s/g) ?? []).length,
     ...artworkStats,
     fileSize: new Blob([svg], { type: "image/svg+xml" }).size,
@@ -1067,7 +1019,7 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
   return resultFromParts(
     width,
     height,
-    cleanIndexedMap(width, height, pixelMap, alphaMap, palette, cleanup),
+    cleanIndexedMap(width, height, pixelMap, palette, cleanup),
     alphaMap,
     palette,
     cleanup,
