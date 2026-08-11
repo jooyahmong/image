@@ -43,6 +43,11 @@ export type VectorResult = {
 
 export type CropBox = { x: number; y: number; width: number; height: number };
 
+export type ObjectRegion = CropBox & {
+  seed: number;
+  area: number;
+};
+
 const MAX_PROCESSING_DIMENSION = 1600;
 const TRANSPARENT_INDEX = 255;
 
@@ -199,19 +204,24 @@ export function renderPalette(
 }
 
 function smoothIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
-  const passes = { none: 0, light: 1, medium: 1, strong: 2 }[cleanup];
-  const minimum = { none: 9, light: 6, medium: 5, strong: 5 }[cleanup];
+  const radii = {
+    none: [] as number[],
+    light: [1],
+    medium: [1, 1],
+    strong: [1, 2, 1],
+  }[cleanup];
   let current = source.slice();
 
-  for (let pass = 0; pass < passes; pass += 1) {
+  for (const radius of radii) {
     const next = current.slice();
-    for (let y = 1; y < height - 1; y += 1) {
-      for (let x = 1; x < width - 1; x += 1) {
+    const minimumDominance = radius === 1 ? 5 : 14;
+    const minimumLead = radius === 1 ? 2 : 4;
+    for (let y = radius; y < height - radius; y += 1) {
+      for (let x = radius; x < width - radius; x += 1) {
         const offset = y * width + x;
         const counts = new Map<number, number>();
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dx = -1; dx <= 1; dx += 1) {
-            if (dx === 0 && dy === 0) continue;
+        for (let dy = -radius; dy <= radius; dy += 1) {
+          for (let dx = -radius; dx <= radius; dx += 1) {
             const value = current[(y + dy) * width + x + dx];
             counts.set(value, (counts.get(value) ?? 0) + 1);
           }
@@ -224,7 +234,12 @@ function smoothIndexedMap(width: number, height: number, source: Uint8Array, cle
             dominantCount = count;
           }
         }
-        if (dominant !== current[offset] && dominantCount >= minimum) next[offset] = dominant;
+        const currentCount = counts.get(current[offset]) ?? 0;
+        if (
+          dominant !== current[offset] &&
+          dominantCount >= minimumDominance &&
+          dominantCount >= currentCount + minimumLead
+        ) next[offset] = dominant;
       }
     }
     current = next;
@@ -236,13 +251,15 @@ function removeTinyComponents(width: number, height: number, source: Uint8Array,
   const totalPixels = width * height;
   const minimumArea = {
     none: 0,
-    light: Math.max(3, Math.round(totalPixels * .000003)),
-    medium: Math.max(12, Math.round(totalPixels * .000015)),
-    strong: Math.max(96, Math.round(totalPixels * .0001)),
+    light: Math.max(4, Math.round(totalPixels * .000004)),
+    medium: Math.max(18, Math.round(totalPixels * .000025)),
+    strong: Math.max(180, Math.round(totalPixels * .00028)),
   }[cleanup];
   if (!minimumArea) return source.slice();
 
   const output = source.slice();
+  const globalCounts = new Uint32Array(256);
+  for (const color of output) globalCounts[color] += 1;
   const visited = new Uint8Array(output.length);
   const component = new Int32Array(output.length);
   const neighbors = [
@@ -284,21 +301,36 @@ function removeTinyComponents(width: number, height: number, source: Uint8Array,
 
     if (tail >= minimumArea) continue;
     let replacement = TRANSPARENT_INDEX;
-    let strongestBoundary = 0;
+    let strongestScore = -1;
+    const hasVisibleBoundary = [...boundaryCounts.keys()].some((candidate) => candidate !== TRANSPARENT_INDEX);
     for (const [candidate, count] of boundaryCounts) {
-      if (count > strongestBoundary) {
+      if (hasVisibleBoundary && candidate === TRANSPARENT_INDEX) continue;
+      // Prefer the color sharing the longest boundary, then bias toward the
+      // globally larger region. Edge freckles are absorbed into the body they
+      // visually belong to instead of becoming holes or separate SVG pieces.
+      const score = count * (1 + Math.log2(2 + globalCounts[candidate]));
+      if (score > strongestScore) {
         replacement = candidate;
-        strongestBoundary = count;
+        strongestScore = score;
       }
     }
-    for (let index = 0; index < tail; index += 1) output[component[index]] = replacement;
+    for (let index = 0; index < tail; index += 1) {
+      output[component[index]] = replacement;
+      globalCounts[colorIndex] = Math.max(0, globalCounts[colorIndex] - 1);
+      globalCounts[replacement] += 1;
+    }
   }
 
   return output;
 }
 
 function cleanIndexedMap(width: number, height: number, source: Uint8Array, cleanup: CleanupLevel) {
-  const smoothed = smoothIndexedMap(width, height, source, cleanup);
+  if (cleanup === "none") return source.slice();
+  const withoutIslands = removeTinyComponents(width, height, source, cleanup);
+  const smoothed = smoothIndexedMap(width, height, withoutIslands, cleanup);
+  // Smoothing can leave a final one-pixel crescent at a former island edge.
+  // Run component absorption once more so only substantial color masses reach
+  // the vector tracer.
   return removeTinyComponents(width, height, smoothed, cleanup);
 }
 
@@ -450,8 +482,14 @@ function curvePathData(pathData: string, cleanup: CleanupLevel) {
   return curved.length === contours.length && curved.length ? curved.join(" ") : pathData;
 }
 
-function curvePathMarkup(path: string, cleanup: CleanupLevel) {
-  return path.replace(/\sd="([^"]*)"/, (match, pathData: string) => ` d="${curvePathData(pathData, cleanup)}"`);
+function curvedPathData(path: string, cleanup: CleanupLevel) {
+  const pathData = path.match(/\sd="([^"]*)"/)?.[1];
+  return pathData ? curvePathData(pathData, cleanup) : "";
+}
+
+function compoundPath(pathData: string[], color: string, strokeWidth: number) {
+  if (!pathData.length) return "";
+  return `<path fill="${color}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" fill-rule="evenodd" clip-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
 }
 
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
@@ -525,28 +563,30 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   });
   const silhouettePaths: string[] = [];
   for (const match of silhouetteSvg.matchAll(/<path\s+[^>]*desc="l\s+0\s+p\s+\d+"[^>]*\/>/g)) {
-    silhouettePaths.push(curvePathMarkup(match[0]
-      .replace(/\sdesc="[^"]*"/, "")
-      .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" '), cleanup));
+    const pathData = curvedPathData(match[0], cleanup);
+    if (pathData) silhouettePaths.push(pathData);
   }
+  const basePath = compoundPath(silhouettePaths, palette[0]?.hex ?? "#000000", Math.max(.75, traceSettings.stroke));
   const baseLayer = silhouettePaths.length
-    ? `<g id="vector-base-layer" class="vector-layer vector-base-layer" data-base-layer="true" data-color-index="0" data-color="${palette[0]?.hex ?? "#000000"}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${silhouettePaths.join("")}</g>`
+    ? `<g id="vector-base-layer" class="vector-layer vector-base-layer" data-base-layer="true" data-color-index="0" data-color="${palette[0]?.hex ?? "#000000"}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${basePath}</g>`
     : "";
 
   const pathsByLayer = palette.map(() => [] as string[]);
   for (const match of rawSvg.matchAll(/<path\s+[^>]*desc="l\s+(\d+)\s+p\s+\d+"[^>]*\/>/g)) {
     const layer = Number(match[1]);
     if (pathsByLayer[layer]) {
-      const cleanPath = match[0]
-        .replace(/\sdesc="[^"]*"/, "")
-        .replace("<path ", '<path stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision" ');
-      pathsByLayer[layer].push(curvePathMarkup(cleanPath, cleanup));
+      const pathData = curvedPathData(match[0], cleanup);
+      if (pathData) pathsByLayer[layer].push(pathData);
     }
   }
   const layers = pathsByLayer.map((paths, index) => {
     if (!paths.length) return "";
     const color = palette[index];
-    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${paths.join("")}</g>`;
+    // One compound path per color keeps Illustrator's Layers panel clean. All
+    // substantial islands of the same color remain editable as subpaths, but
+    // they no longer arrive as hundreds of separate dot objects.
+    const path = compoundPath(paths, color.hex, traceSettings.stroke);
+    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" role="img" aria-label="Layered vector artwork">${baseLayer}${layers}</svg>`;
 }
@@ -770,11 +810,11 @@ export function getVisibleBounds(result: VectorResult, padding = 1): CropBox {
   return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
 }
 
-export function getSeparateObjectBounds(result: VectorResult, padding = 2): CropBox[] {
+export function getSeparateObjectBounds(result: VectorResult, padding = 2): ObjectRegion[] {
   const visited = new Uint8Array(result.pixelMap.length);
   const queue = new Int32Array(result.pixelMap.length);
   const minimumArea = Math.max(24, Math.round(result.width * result.height * .00004));
-  const objects: Array<CropBox & { area: number }> = [];
+  const objects: ObjectRegion[] = [];
 
   for (let start = 0; start < result.pixelMap.length; start += 1) {
     if (visited[start] || result.pixelMap[start] === TRANSPARENT_INDEX || result.alphaMap[start] <= 8) continue;
@@ -814,15 +854,74 @@ export function getSeparateObjectBounds(result: VectorResult, padding = 2): Crop
     const y = Math.max(0, minY - padding);
     const right = Math.min(result.width, maxX + 1 + padding);
     const bottom = Math.min(result.height, maxY + 1 + padding);
-    objects.push({ x, y, width: right - x, height: bottom - y, area: tail });
+    objects.push({ x, y, width: right - x, height: bottom - y, area: tail, seed: start });
   }
 
-  return objects.sort((first, second) => second.area - first.area).map((object) => ({
-    x: object.x,
-    y: object.y,
-    width: object.width,
-    height: object.height,
-  }));
+  return objects.sort((first, second) => second.area - first.area);
+}
+
+export function extractObjectResult(
+  result: VectorResult,
+  region: ObjectRegion,
+  cleanup: CleanupLevel,
+) {
+  const included = new Uint8Array(result.pixelMap.length);
+  const queue = new Int32Array(result.pixelMap.length);
+  let head = 0;
+  let tail = 0;
+  queue[tail++] = region.seed;
+  included[region.seed] = 1;
+
+  while (head < tail) {
+    const pixel = queue[head++];
+    const x = pixel % result.width;
+    const y = Math.floor(pixel / result.width);
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dy === 0) continue;
+        const nextX = x + dx;
+        const nextY = y + dy;
+        if (nextX < 0 || nextY < 0 || nextX >= result.width || nextY >= result.height) continue;
+        const nextPixel = nextY * result.width + nextX;
+        if (
+          included[nextPixel] ||
+          result.pixelMap[nextPixel] === TRANSPARENT_INDEX ||
+          result.alphaMap[nextPixel] <= 8
+        ) continue;
+        included[nextPixel] = 1;
+        queue[tail++] = nextPixel;
+      }
+    }
+  }
+
+  const sourceX = Math.max(0, Math.floor(region.x));
+  const sourceY = Math.max(0, Math.floor(region.y));
+  const width = Math.max(1, Math.min(result.width - sourceX, Math.ceil(region.width)));
+  const height = Math.max(1, Math.min(result.height - sourceY, Math.ceil(region.height)));
+  const pixelMap = new Uint8Array(width * height).fill(TRANSPARENT_INDEX);
+  const alphaMap = new Uint8ClampedArray(width * height);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const sourcePixel = (sourceY + y) * result.width + sourceX + x;
+      if (!included[sourcePixel]) continue;
+      const targetPixel = y * width + x;
+      pixelMap[targetPixel] = result.pixelMap[sourcePixel];
+      alphaMap[targetPixel] = result.alphaMap[sourcePixel];
+    }
+  }
+
+  // Rebuild the SVG from the isolated raster component. This is intentionally
+  // different from changing viewBox: paths for every other illustration are
+  // absent from the downloaded file, including beyond the Illustrator canvas.
+  return resultFromParts(
+    width,
+    height,
+    pixelMap,
+    alphaMap,
+    result.palette.map((color) => ({ ...color })),
+    cleanup,
+  );
 }
 
 export function formatBytes(bytes: number) {

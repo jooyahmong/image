@@ -36,6 +36,7 @@ import {
   deleteColors,
   downloadPng,
   downloadText,
+  extractObjectResult,
   formatBytes,
   getSeparateObjectBounds,
   getVisibleBounds,
@@ -430,35 +431,38 @@ export default function Home() {
     }
   }, [crop, fileName, pngScale, result]);
 
-  const exportObjectSvg = useCallback(async (objectCrop: CropBox, index: number) => {
+  const exportObjectSvg = useCallback(async (objectCrop: (typeof separateObjects)[number], index: number) => {
     if (!result) return;
     const state = `object-svg-${index}`;
     setExportState(state);
     setExportMessage("");
     try {
-      const status = await downloadText(cropSvg(result.svg, objectCrop), `${cleanFilename(fileName)}-object-${index + 1}.svg`, "image/svg+xml");
+      const isolated = extractObjectResult(result, objectCrop, cleanup);
+      const status = await downloadText(isolated.svg, `${cleanFilename(fileName)}-object-${index + 1}.svg`, "image/svg+xml");
       if (status !== "cancelled") setExportMessage(`Object ${index + 1} SVG ${status === "saved" ? "saved" : "download started"}.`);
     } catch (caught) {
       setExportMessage(caught instanceof Error ? caught.message : `Object ${index + 1} SVG download failed.`);
     } finally {
       setExportState("");
     }
-  }, [fileName, result]);
+  }, [cleanup, fileName, result]);
 
-  const exportObjectPng = useCallback(async (objectCrop: CropBox, index: number) => {
+  const exportObjectPng = useCallback(async (objectCrop: (typeof separateObjects)[number], index: number) => {
     if (!result) return;
     const state = `object-png-${index}`;
     setExportState(state);
     setExportMessage("");
     try {
-      const status = await downloadPng(result.svg, objectCrop, pngScale, `${cleanFilename(fileName)}-object-${index + 1}-${pngScale}x.png`);
+      const isolated = extractObjectResult(result, objectCrop, cleanup);
+      const isolatedCrop = { x: 0, y: 0, width: isolated.width, height: isolated.height };
+      const status = await downloadPng(isolated.svg, isolatedCrop, pngScale, `${cleanFilename(fileName)}-object-${index + 1}-${pngScale}x.png`);
       if (status !== "cancelled") setExportMessage(`Object ${index + 1} PNG ${status === "saved" ? "saved" : "download started"}.`);
     } catch (caught) {
       setExportMessage(caught instanceof Error ? caught.message : `Object ${index + 1} PNG download failed.`);
     } finally {
       setExportState("");
     }
-  }, [fileName, pngScale, result]);
+  }, [cleanup, fileName, pngScale, result]);
 
   const previewSvg = useMemo(() => result ? highlightSvg(result.svg, selectedColors) : "", [result, selectedColors]);
 
