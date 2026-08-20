@@ -1,8 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 class TestImageData {
@@ -53,18 +49,9 @@ globalThis.document = {
   },
 };
 
-const buildDirectory = mkdtempSync(join(tmpdir(), "woojoo-vector-test-"));
-const bundlePath = join(buildDirectory, "vector-utils.mjs");
-execFileSync(join(process.cwd(), "node_modules/.bin/esbuild"), [
-  "app/vector-utils.ts",
-  "--bundle",
-  "--platform=node",
-  "--format=esm",
-  `--outfile=${bundlePath}`,
-], { stdio: "pipe" });
-const { createVectorResult } = await import(`${bundlePath}?test=${Date.now()}`);
-
-test.after(() => rmSync(buildDirectory, { recursive: true, force: true }));
+const vectorUtilsUrl = new URL("../app/vector-utils.ts", import.meta.url);
+vectorUtilsUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+const { createVectorResult } = await import(vectorUtilsUrl.href);
 
 function makeArtwork(width, height) {
   const imageData = new TestImageData(width, height);

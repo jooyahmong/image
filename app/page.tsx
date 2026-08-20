@@ -1,6 +1,3 @@
-"use client";
-/* eslint-disable @next/next/no-img-element */
-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowLeft,
@@ -88,7 +85,7 @@ const koreanText: Record<string, string> = {
   "disconnected objects detected. Save each with its own fitted canvas.": "개의 분리된 오브젝트를 찾았습니다. 각각의 맞춤 캔버스로 저장하세요.",
   "The bright area is your final canvas. SVG paths stay fully editable.": "밝은 영역이 최종 캔버스입니다. SVG 패스는 계속 편집할 수 있습니다.",
   "Tip:": "팁:", "Likely background": "배경으로 추정", "check the highlighted area, then choose Delete selected.": "강조된 영역을 확인한 뒤 선택 삭제를 누르세요.",
-  "Tip: select": "팁: 선택", "Edit palette": "팔레트 편집", "Reduce colors & vectorize": "색상 줄이기 및 벡터화",
+  "Tip: select": "팁: 선택",
   "SVG saved successfully.": "SVG가 성공적으로 저장되었습니다.", "SVG download started.": "SVG 다운로드가 시작되었습니다.",
 };
 
