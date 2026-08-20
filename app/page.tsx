@@ -66,6 +66,23 @@ const presets = {
   mono: { label: "Ink & paper", colors: ["#202725", "#59635F", "#A8AFAB", "#E1E2DC", "#FAF8F0"] },
 };
 
+const koreanText: Record<string, string> = {
+  "Vector settings": "벡터 설정", "Number of colors": "색상 수", "Visible colors, excluding transparency": "투명도를 제외한 표시 색상",
+  "Smoothness": "부드러움", "Label cleanup, tracing size, and curve simplification": "영역 정리, 추적 크기 및 곡선 단순화",
+  "Precise": "정확", "Balanced": "균형", "Smooth": "매끈", "Anchor simplification": "앵커 단순화",
+  "Reduce SVG nodes for smoother curves. Higher values remove more detail.": "SVG 노드를 줄여 곡선을 더 부드럽게 만듭니다. 높을수록 세부 묘사가 줄어듭니다.",
+  "Keep detail": "디테일 유지", "Smoother": "더 부드럽게", "Reduce colors & vectorize": "색상 줄이기 및 벡터화", "Building your palette…": "팔레트를 만드는 중…",
+  "Transparent outer edges are trimmed automatically.": "투명한 바깥 여백은 자동으로 잘립니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
+  "Edit palette": "팔레트 편집", "Apply": "적용", "Select a color to highlight its exact area.": "색상을 선택해 정확한 영역을 강조 표시하세요.",
+  "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
+  "Brush parts of the selected color that must not be deleted.": "선택한 색상 중 삭제하면 안 되는 부분을 브러시로 지정합니다.", "Use brush": "브러시 사용", "Brush on": "브러시 켜짐",
+  "Keep": "유지", "Undo brush": "브러시 취소", "Clear": "지우기", "Brush size": "브러시 크기", "Merge": "병합", "Delete selected": "선택 삭제",
+  "Final crop & export": "최종 자르기 및 내보내기", "Transparent space": "투명 여백", "Auto crop": "자동 자르기", "Already fitted": "이미 맞춤",
+  "Aspect ratio": "가로세로 비율", "Free": "자유", "Crop edges": "자르기 가장자리", "Reset crop": "자르기 초기화", "PNG size": "PNG 크기",
+  "Separate objects": "분리된 오브젝트", "SVG": "SVG", "Save": "저장", "Close crop dialog": "자르기 창 닫기",
+  "Drag to move": "드래그하여 이동", "Updating vector…": "벡터를 업데이트하는 중…", "colors": "색상", "paths": "패스", "anchors": "앵커", "cubic curves": "큐빅 곡선",
+};
+
 type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
 type ViewMode = "original" | "reduced" | "vector";
 type BrushTool = "protect" | "unprotect";
@@ -143,6 +160,26 @@ export default function Home() {
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("lang") === "ko") setLanguage("ko");
   }, []);
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>("main.app-shell");
+    if (!root) return;
+    const reverse = Object.fromEntries(Object.entries(koreanText).map(([english, korean]) => [korean, english]));
+    const convert = (value: string) => language === "ko" ? koreanText[value] ?? value : reverse[value] ?? value;
+    const translate = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) node.textContent = convert(node.textContent?.trim() ?? "") || node.textContent;
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const element = node as HTMLElement;
+      ["aria-label", "title"].forEach((attribute) => {
+        const value = element.getAttribute(attribute);
+        if (value) element.setAttribute(attribute, convert(value));
+      });
+      element.childNodes.forEach(translate);
+    };
+    translate(root);
+    const observer = new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(translate)));
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [language]);
   const colorSliderProgress = ((colorCount - 2) / 18) * 100;
   const smoothnessProgress = smoothness;
   const cleanup = smoothnessToCleanup(smoothness);
