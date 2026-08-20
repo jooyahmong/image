@@ -708,11 +708,7 @@ export default function Home() {
   return (
     <main className="app-shell" lang={language}>
       <header className="topbar">
-        <a className="brand" href="#" aria-label="WOOJOO Path home">
-          <span className="brand-mark"><img src="/logo.png" alt="WOOJOO Image" /></span>
-          <span>WOOJOO Image</span>
-          <em>by WoojooLand</em>
-        </a>
+        <a className="brand brand-logo" href="#" aria-label="WOOJOO Image home"><img src="/logo.png" alt="WOOJOO Image" /></a>
         <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>
         <nav className="language-switcher" aria-label="Language selection">
           <button type="button" className={!korean ? "active" : ""} onClick={() => setSiteLanguage("en")}>ENG</button>
