@@ -81,6 +81,12 @@ const koreanText: Record<string, string> = {
   "Aspect ratio": "가로세로 비율", "Free": "자유", "Crop edges": "자르기 가장자리", "Reset crop": "자르기 초기화", "PNG size": "PNG 크기",
   "Separate objects": "분리된 오브젝트", "SVG": "SVG", "Save": "저장", "Close crop dialog": "자르기 창 닫기",
   "Drag to move": "드래그하여 이동", "Updating vector…": "벡터를 업데이트하는 중…", "colors": "색상", "paths": "패스", "anchors": "앵커", "cubic curves": "큐빅 곡선",
+  "Balanced (50):": "균형 (50):", "uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.": "3×3 레이블 정리 1회, 800–1200px 작업 그리드의 곡선 맞춤, 그리고 작품의 0.05% 미만인 분리 조각 제거를 사용합니다.",
+  "Private by design.": "개인정보 보호 설계.", "Nothing is uploaded or stored.": "이미지는 업로드되거나 저장되지 않습니다.",
+  "Teal areas are protected and will stay when you choose Delete selected. Use the hand button above to move around while zoomed in.": "청록색 영역은 보호되어 선택 삭제를 해도 유지됩니다. 확대 상태에서는 위의 손 도구로 화면을 이동할 수 있습니다.",
+  "Fit the canvas to the remaining object after deleting a background color.": "배경색을 삭제한 뒤 남은 오브젝트에 맞춰 캔버스를 조정합니다.",
+  "disconnected objects detected. Save each with its own fitted canvas.": "개의 분리된 오브젝트를 찾았습니다. 각각의 맞춤 캔버스로 저장하세요.",
+  "The bright area is your final canvas. SVG paths stay fully editable.": "밝은 영역이 최종 캔버스입니다. SVG 패스는 계속 편집할 수 있습니다.",
 };
 
 type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
