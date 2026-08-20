@@ -957,22 +957,23 @@ function compoundPath(pathData: string[], color: string, strokeWidth: number) {
   return `<path fill="${color}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" fill-rule="evenodd" clip-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
 }
 
-function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel) {
+function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel, anchorSimplification = 0) {
   const traceSettings = {
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .2, minimumDimension: 800, maximumDimension: 1600 },
     light: { pathOmit: 8, lineTolerance: .3, curveTolerance: 1.35, blur: 0, blurDelta: 28, stroke: .25, minimumDimension: 800, maximumDimension: 1400 },
     medium: { pathOmit: 12, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, minimumDimension: 800, maximumDimension: 1200 },
     strong: { pathOmit: 20, lineTolerance: .12, curveTolerance: 2.7, blur: 0, blurDelta: 38, stroke: .35, minimumDimension: 800, maximumDimension: 1000 },
   }[cleanup];
+  const simplification = Math.max(0, Math.min(100, anchorSimplification)) / 100;
   const tracing = resizeForTracing(imageData, traceSettings.minimumDimension, traceSettings.maximumDimension);
   const traceImageData = tracing.imageData;
   const hasTransparency = traceImageData.data.some((value, index) => index % 4 === 3 && value < 10);
   const tracePalette = palette.map(({ r, g, b }) => ({ r, g, b, a: 255 }));
   if (hasTransparency) tracePalette.push({ r: 0, g: 0, b: 0, a: 0 });
   const traceOptions = {
-    ltres: traceSettings.lineTolerance,
-    qtres: traceSettings.curveTolerance,
-    pathomit: traceSettings.pathOmit,
+    ltres: traceSettings.lineTolerance * (1 + simplification * 1.8),
+    qtres: traceSettings.curveTolerance * (1 + simplification * 2.4),
+    pathomit: Math.round(traceSettings.pathOmit * (1 + simplification * 2.5)),
     rightangleenhance: false,
     colorsampling: 0,
     numberofcolors: tracePalette.length,
@@ -1022,6 +1023,7 @@ function resultFromParts(
   alphaMap: Uint8ClampedArray,
   palette: PaletteColor[],
   cleanup: CleanupLevel,
+  anchorSimplification = 0,
 ): VectorResult {
   const normalized = normalizePalette(width, height, pixelMap, palette);
   const imageData = renderPalette(width, height, normalized.pixelMap, alphaMap, normalized.palette);
@@ -1038,7 +1040,7 @@ function resultFromParts(
     traceReady.data[offset + 2] = color.b;
     traceReady.data[offset + 3] = 255;
   }
-  const svg = traceImage(traceReady, normalized.palette, cleanup);
+  const svg = traceImage(traceReady, normalized.palette, cleanup, anchorSimplification);
   const artworkStats = artworkComponentCounts(width, height, normalized.pixelMap);
   const cubicCount = (svg.match(/\bC\s/g) ?? []).length;
   const drawingCommandCount = (svg.match(/\b[LQC]\s/g) ?? []).length;
@@ -1060,7 +1062,7 @@ function resultFromParts(
   };
 }
 
-export function createVectorResult(source: RasterSource, colorCount: number, cleanup: CleanupLevel) {
+export function createVectorResult(source: RasterSource, colorCount: number, cleanup: CleanupLevel, anchorSimplification = 0) {
   const { data, width, height } = source.imageData;
   const opaquePixels = Math.max(1, data.length / 4);
   const sampleStep = Math.max(1, Math.floor(opaquePixels / 220000));
@@ -1151,6 +1153,7 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
     alphaMap,
     palette,
     cleanup,
+    anchorSimplification,
   );
 }
 

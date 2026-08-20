@@ -115,6 +115,7 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
   const [smoothness, setSmoothness] = useState(50);
+  const [anchorSimplification, setAnchorSimplification] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -203,7 +204,7 @@ export default function Home() {
     try {
       const fullCrop = sourceCrop.x === 0 && sourceCrop.y === 0 && sourceCrop.width === source.width && sourceCrop.height === source.height;
       const conversionSource = fullCrop ? source : cropRasterSource(source, sourceCrop);
-      const converted = createVectorResult(conversionSource, colorCount, cleanup);
+      const converted = createVectorResult(conversionSource, colorCount, cleanup, anchorSimplification);
       setSource(conversionSource);
       setSourceCrop({ x: 0, y: 0, width: conversionSource.width, height: conversionSource.height });
       setResult(converted);
@@ -224,7 +225,7 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
-  }, [cleanup, colorCount, pushHistory, source, sourceCrop]);
+  }, [anchorSimplification, cleanup, colorCount, pushHistory, source, sourceCrop]);
 
   const startSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
     if (!source || !sourceCropStage.current) return;
@@ -753,6 +754,9 @@ export default function Home() {
             <div className="setting-row"><div><label htmlFor="smoothness">Smoothness</label><small>Label cleanup, tracing size, and curve simplification</small></div><span className="value-box">{smoothness}</span></div>
             <input id="smoothness" className="range-control smoothness-range" type="range" min="0" max="100" value={smoothness} style={{ background: `linear-gradient(90deg, var(--green) 0 ${smoothnessProgress}%, #e9ece8 ${smoothnessProgress}% 100%)` }} onChange={(event) => setSmoothness(Number(event.target.value))}/>
             <div className="range-labels" aria-hidden="true"><span>Precise</span><span>Balanced</span><span>Smooth</span></div>
+            <div className="setting-row"><div><label htmlFor="anchor-simplification">Anchor simplification</label><small>Reduce SVG nodes for smoother curves. Higher values remove more detail.</small></div><span className="value-box">{anchorSimplification}%</span></div>
+            <input id="anchor-simplification" className="range-control" type="range" min="0" max="100" value={anchorSimplification} style={{ background: `linear-gradient(90deg, var(--green) 0 ${anchorSimplification}%, #e9ece8 ${anchorSimplification}% 100%)` }} onChange={(event) => setAnchorSimplification(Number(event.target.value))}/>
+            <div className="range-labels" aria-hidden="true"><span>Keep detail</span><span>Balanced</span><span>Smoother</span></div>
             <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
