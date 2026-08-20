@@ -649,7 +649,7 @@ export default function Home() {
         <a className="brand" href="#" aria-label="WOOJOO Path home">
           <span className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></span>
           <span>WOOJOO Path</span>
-          <em>by Jookland</em>
+          <em>by WoojooLand</em>
         </a>
         <div className="privacy-note"><ShieldCheck size={16} /><span>Your image stays on this device</span></div>
         <span className="beta-badge">MVP BETA</span>

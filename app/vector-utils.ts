@@ -994,50 +994,6 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   const traced = ImageTracer.imagedataToTracedata(traceImageData, traceOptions);
   const samplingScale = Math.max(traceImageData.width / imageData.width, traceImageData.height / imageData.height);
 
-  // A single union silhouette in the dominant color sits behind every color
-  // layer. It closes antialiasing hairlines between neighboring shapes without
-  // adding artificial outlines or changing the visible palette.
-  const silhouetteData = new ImageData(traceImageData.width, traceImageData.height);
-  const dominant = palette[0] ?? { r: 0, g: 0, b: 0 };
-  for (let pixel = 0; pixel < traceImageData.width * traceImageData.height; pixel += 1) {
-    const offset = pixel * 4;
-    if (traceImageData.data[offset + 3] <= 8) continue;
-    silhouetteData.data[offset] = dominant.r;
-    silhouetteData.data[offset + 1] = dominant.g;
-    silhouetteData.data[offset + 2] = dominant.b;
-    silhouetteData.data[offset + 3] = 255;
-  }
-  const silhouetteTrace = ImageTracer.imagedataToTracedata(silhouetteData, {
-    ltres: traceSettings.lineTolerance,
-    qtres: traceSettings.curveTolerance,
-    pathomit: traceSettings.pathOmit,
-    rightangleenhance: false,
-    colorsampling: 0,
-    numberofcolors: 2,
-    colorquantcycles: 1,
-    layering: 0,
-    blurradius: traceSettings.blur,
-    blurdelta: traceSettings.blurDelta,
-    strokewidth: Math.max(.75, traceSettings.stroke),
-    linefilter: cleanup !== "none",
-    scale: 1,
-    roundcoords: 1,
-    viewbox: true,
-    desc: false,
-    pal: [{ ...dominant, a: 255 }, { r: 0, g: 0, b: 0, a: 0 }],
-  });
-  const silhouettePaths: string[] = [];
-  const silhouetteLayer = silhouetteTrace.layers[0] ?? [];
-  for (let pathIndex = 0; pathIndex < silhouetteLayer.length; pathIndex += 1) {
-    if (!keepTracedPath(silhouetteLayer, pathIndex, traceImageData.width * traceImageData.height, cleanup)) continue;
-    const pathData = tracedPathData(silhouetteLayer, pathIndex, cleanup, samplingScale);
-    if (pathData) silhouettePaths.push(pathData);
-  }
-  const basePath = compoundPath(silhouettePaths, palette[0]?.hex ?? "#000000", Math.max(.75, traceSettings.stroke));
-  const baseLayer = silhouettePaths.length
-    ? `<g id="vector-base-layer" class="vector-layer vector-base-layer" data-base-layer="true" data-color-index="0" data-color="${palette[0]?.hex ?? "#000000"}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${basePath}</g>`
-    : "";
-
   const pathsByLayer = palette.map(() => [] as string[]);
   for (let layerIndex = 0; layerIndex < palette.length; layerIndex += 1) {
     const tracedLayer = traced.layers[layerIndex] ?? [];
@@ -1056,7 +1012,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v2" role="img" aria-label="Layered vector artwork">${baseLayer}${layers}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v2" role="img" aria-label="Layered vector artwork">${layers}</svg>`;
 }
 
 function resultFromParts(
@@ -1261,7 +1217,7 @@ export function highlightSvg(svg: string, selected: number[]) {
     const active = chosen.has(Number(rawIndex));
     return `<g${attrs} data-highlighted="${active ? "true" : "false"}">`;
   });
-  const selectionStyle = `<style>.vector-base-layer{opacity:0!important;filter:none!important}.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
+  const selectionStyle = `<style>.vector-layer[data-highlighted="false"]{opacity:.1}.vector-layer[data-highlighted="true"]{opacity:1;filter:drop-shadow(0 0 1.8px #ff604f)}</style>`;
   return highlighted.replace(/<svg\b([^>]*)>/, `<svg$1>${selectionStyle}`);
 }
 
