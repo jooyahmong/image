@@ -44,7 +44,9 @@ button { color: inherit; }
 .brand em { font-size: 13.2px; color: #829089; font-style: normal; font-weight: 700; margin-left: -4px; padding-top: 4px; }
 .privacy-note { display: flex; align-items: center; gap: 7px; padding: 8px 13px; border-radius: 999px; color: var(--green); background: var(--mint); font-size: 14.4px; font-weight: 700; }
 .text-button { border: 0; background: transparent; cursor: pointer; }
-.beta-badge { justify-self: end; padding: 7px 10px; border: 1px solid #d9dfda; border-radius: 7px; color: #69766f; background: #fff; font-size: 10.8px; font-weight: 900; letter-spacing: .12em; }
+.language-switcher { justify-self: end; display: flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid #d9dfda; border-radius: 7px; color: #a1aaa5; background: #fff; font-size: 10.8px; font-weight: 850; }
+.language-switcher button { padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; }
+.language-switcher button.active { color: var(--green); }
 
 .workflow-header { width: min(1240px, 92vw); margin: 52px auto 28px; display: flex; align-items: end; justify-content: space-between; gap: 36px; }
 .eyebrow, .step-label { display: block; color: var(--coral); font-size: 13.2px; line-height: 1; font-weight: 900; letter-spacing: .16em; }

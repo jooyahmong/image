@@ -54,7 +54,10 @@ import {
   VectorResult,
 } from "./vector-utils";
 
-const steps = ["Upload", "Colors", "Edit", "Crop", "Export"];
+const steps = {
+  en: ["Upload", "Colors", "Edit", "Crop", "Export"],
+  ko: ["업로드", "색상", "편집", "자르기", "내보내기"],
+};
 const presets = {
   original: { label: "Original palette", colors: [] },
   coastal: { label: "Coastal", colors: ["#183B4E", "#3F7C85", "#91C8C4", "#E7E2D5", "#F4A261"] },
@@ -135,12 +138,23 @@ export default function Home() {
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
+  const [language, setLanguage] = useState<"en" | "ko">("en");
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("lang") === "ko") setLanguage("ko");
+  }, []);
   const colorSliderProgress = ((colorCount - 2) / 18) * 100;
   const smoothnessProgress = smoothness;
   const cleanup = smoothnessToCleanup(smoothness);
   const panEnabled = zoom > 100 && (panMode || !brushMode);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
+  const korean = language === "ko";
+  const setSiteLanguage = (next: "en" | "ko") => {
+    setLanguage(next);
+    const url = new URL(window.location.href);
+    if (next === "ko") url.searchParams.set("lang", "ko"); else url.searchParams.delete("lang");
+    window.history.replaceState({}, "", url);
+  };
 
   const clearProtection = useCallback(() => {
     protectedMask.current = new Uint8Array(result?.pixelMap.length ?? 0);
@@ -644,25 +658,29 @@ export default function Home() {
   }, [brushCursor, brushMode, panMode, result, selectedColors, viewMode]);
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" lang={language}>
       <header className="topbar">
         <a className="brand" href="#" aria-label="WOOJOO Path home">
           <span className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></span>
           <span>WOOJOO Path</span>
           <em>by WoojooLand</em>
         </a>
-        <div className="privacy-note"><ShieldCheck size={16} /><span>Your image stays on this device</span></div>
-        <span className="beta-badge">MVP BETA</span>
+        <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>
+        <nav className="language-switcher" aria-label="Language selection">
+          <button type="button" className={!korean ? "active" : ""} onClick={() => setSiteLanguage("en")}>ENG</button>
+          <span>/</span>
+          <button type="button" className={korean ? "active" : ""} onClick={() => setSiteLanguage("ko")}>한국어</button>
+        </nav>
       </header>
 
       <section className="workflow-header">
         <div>
-          <span className="eyebrow">RASTER TO VECTOR</span>
-          <h1>{result ? "Refine your vector palette." : "Turn artwork into a clean, editable SVG."}</h1>
-          <p>{result ? "Click any swatch to recolor every matching shape, merge colors, then crop and export." : "Reduce colors, refine your palette, crop, and export — all in one private workspace."}</p>
+          <span className="eyebrow">{korean ? "래스터 이미지를 벡터로" : "RASTER TO VECTOR"}</span>
+          <h1>{result ? (korean ? "벡터 팔레트를 다듬어 보세요." : "Refine your vector palette.") : (korean ? "이미지를 깨끗하고 편집 가능한 SVG로 바꾸세요." : "Turn artwork into a clean, editable SVG.")}</h1>
+          <p>{result ? (korean ? "색상 견본을 눌러 모양을 다시 칠하고, 색상을 합친 뒤 자르고 내보내세요." : "Click any swatch to recolor every matching shape, merge colors, then crop and export.") : (korean ? "색상을 줄이고, 팔레트를 다듬고, 자른 뒤 내보내세요. 모든 작업은 이 기기에서 안전하게 처리됩니다." : "Reduce colors, refine your palette, crop, and export — all in one private workspace.")}</p>
         </div>
-        <nav className="steps" aria-label="Conversion progress">
-          {steps.map((step, index) => (
+        <nav className="steps" aria-label={korean ? "변환 진행 상황" : "Conversion progress"}>
+          {steps[language].map((step, index) => (
             <div className={`step ${index <= currentStep ? "active" : ""}`} key={step}>
               <span>{index < currentStep ? <Check size={13} /> : index + 1}</span><b>{step}</b>
             </div>
@@ -674,8 +692,8 @@ export default function Home() {
         <section className="workspace-grid">
           <div className="canvas-card">
             <div className="card-heading">
-              <div><span className="step-label">STEP 1</span><h2>Upload your artwork</h2></div>
-              {source && <button className="text-button" type="button" onClick={() => fileInput.current?.click()}><RotateCcw size={15}/> Replace</button>}
+              <div><span className="step-label">{korean ? "1단계" : "STEP 1"}</span><h2>{korean ? "이미지 업로드" : "Upload your artwork"}</h2></div>
+              {source && <button className="text-button" type="button" onClick={() => fileInput.current?.click()}><RotateCcw size={15}/> {korean ? "바꾸기" : "Replace"}</button>}
             </div>
             <div
               className={`dropzone ${isDragging ? "dragging" : ""} ${source ? "has-image" : ""}`}
@@ -720,7 +738,7 @@ export default function Home() {
                   <span className="file-pill"><ImagePlus size={15}/>{fileName}<small>{source.width} × {source.height}px</small></span>
                 </>
               ) : (
-                <><span className="upload-icon"><UploadCloud size={28} /></span><strong>{busy ? "Reading your image…" : "Drop your image here"}</strong><p>or click to choose a file</p><span className="formats">PNG · JPG · WEBP · up to 20 MB</span></>
+                <><span className="upload-icon"><UploadCloud size={28} /></span><strong>{busy ? (korean ? "이미지를 읽는 중…" : "Reading your image…") : (korean ? "이미지를 여기에 놓으세요" : "Drop your image here")}</strong><p>{korean ? "또는 클릭하여 파일을 선택하세요" : "or click to choose a file"}</p><span className="formats">PNG · JPG · WEBP · {korean ? "최대" : "up to"} 20 MB</span></>
               )}
             </div>
             <input ref={fileInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void acceptFile(event.target.files?.[0])}/>
