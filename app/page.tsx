@@ -709,7 +709,7 @@ export default function Home() {
       <header className="topbar">
         <a className="brand" href="#" aria-label="WOOJOO Path home">
           <span className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></span>
-          <span>WOOJOO Path</span>
+          <span>WOOJOO Image</span>
           <em>by WoojooLand</em>
         </a>
         <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>

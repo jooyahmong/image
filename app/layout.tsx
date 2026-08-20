@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WOOJOO Path",
+  title: "WOOJOO Image",
   description: "Reduce colors, edit palettes, crop and export clean SVG artwork in your browser.",
   other: {
     "codex-preview": "development",
