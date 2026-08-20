@@ -41,6 +41,7 @@ button { color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 800; letter-spacing: -.02em; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; color: #fff; background: var(--green); transform: rotate(-3deg); }
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; transform: rotate(3deg); }
 .brand em { font-size: 13.2px; color: #829089; font-style: normal; font-weight: 700; margin-left: -4px; padding-top: 4px; }
 .privacy-note { display: flex; align-items: center; gap: 7px; padding: 8px 13px; border-radius: 999px; color: var(--green); background: var(--mint); font-size: 14.4px; font-weight: 700; }
 .text-button { border: 0; background: transparent; cursor: pointer; }
@@ -48,6 +49,10 @@ button { color: inherit; }
 .language-switcher button { padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; }
 .language-switcher button.active { color: var(--green); }
 .site-footer { width: min(1240px, 92vw); margin: 34px auto 24px; color: #8a9690; font-size: 10.8px; text-align: center; }
+.site-footer button { margin-left: 8px; padding: 0; border: 0; color: var(--green); background: transparent; cursor: pointer; font: inherit; text-decoration: underline; }
+.legal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(22,35,30,.38); }
+.legal-modal { position: relative; width: min(520px, 100%); padding: 30px; border-radius: 16px; color: var(--ink); background: #fff; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+.legal-modal h2 { margin: 0 0 16px; font-size: 22px; }.legal-modal p { color: var(--muted); font-size: 14px; line-height: 1.7; }.legal-close { position:absolute; top:14px; right:14px; border:0; background:transparent; cursor:pointer; }
 
 .workflow-header { width: min(1240px, 92vw); margin: 52px auto 28px; display: flex; align-items: end; justify-content: space-between; gap: 36px; }
 .eyebrow, .step-label { display: block; color: var(--coral); font-size: 13.2px; line-height: 1; font-weight: 900; letter-spacing: .16em; }

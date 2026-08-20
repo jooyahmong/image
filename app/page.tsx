@@ -166,6 +166,7 @@ export default function Home() {
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
   const [language, setLanguage] = useState<"en" | "ko">("en");
+  const [legalOpen, setLegalOpen] = useState(false);
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("lang") === "ko") setLanguage("ko");
   }, []);
@@ -708,7 +709,7 @@ export default function Home() {
     <main className="app-shell" lang={language}>
       <header className="topbar">
         <a className="brand" href="#" aria-label="WOOJOO Path home">
-          <span className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></span>
+          <span className="brand-mark"><img src="/logo.png" alt="WOOJOO Image" /></span>
           <span>WOOJOO Image</span>
           <em>by WoojooLand</em>
         </a>
@@ -971,7 +972,8 @@ export default function Home() {
           </section>
         </div>
       )}
-      <footer className="site-footer">© {new Date().getFullYear()} WoojooLand. All rights reserved.</footer>
+      <footer className="site-footer">© {new Date().getFullYear()} WoojooLand. All rights reserved. <button type="button" onClick={() => setLegalOpen(true)}>개인정보 이용 안내</button></footer>
+      {legalOpen && <div className="legal-backdrop" role="presentation"><section className="legal-modal" role="dialog" aria-modal="true" aria-labelledby="legal-title"><button className="legal-close" type="button" aria-label="닫기" onClick={() => setLegalOpen(false)}><X size={18}/></button><h2 id="legal-title">개인정보 이용 안내</h2><p>WOOJOO Image는 이미지를 서버에 업로드하거나 저장하지 않습니다. 모든 이미지 처리와 SVG 생성은 사용자의 기기에서 이루어집니다.</p><p>로그인, 결제, 회원 정보 수집 기능을 사용하지 않습니다. 브라우저 또는 호스팅 서비스의 기본 기술 로그는 서비스 운영과 보안 목적으로 처리될 수 있습니다.</p><p>문의: WoojooLand</p></section></div>}
     </main>
   );
 }
