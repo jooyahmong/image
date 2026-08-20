@@ -971,6 +971,7 @@ export default function Home() {
           </section>
         </div>
       )}
+      <footer className="site-footer">© {new Date().getFullYear()} WoojooLand. All rights reserved.</footer>
     </main>
   );
 }
