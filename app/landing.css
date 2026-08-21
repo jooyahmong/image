@@ -64,9 +64,15 @@
 .landing-proof li { display: inline-flex; align-items: center; gap: 6px; }
 .landing-proof svg { color: var(--landing-green-2); }
 
-.landing-hero-visual { position: relative; justify-self: end; width: min(100%, 520px); height: 610px; padding: 18px; border: 3px solid #07130e; border-radius: 34px; background: var(--landing-green-2); box-shadow: 22px 24px 0 #102f25; transform: rotate(1.2deg); }
-.landing-hero-visual > img { width: 100%; height: 100%; display: block; border-radius: 20px; object-fit: cover; object-position: top center; background: #fff; }
-.landing-hero-visual.en > img { object-position: center top; }
+.landing-hero-visual { position: relative; justify-self: end; width: min(100%, 520px); height: 700px; display: grid; place-items: center; }
+.landing-phone { position: relative; overflow: visible; border: 8px solid #15213b; border-radius: 42px; background: #15213b; box-shadow: 0 35px 70px rgba(23,63,130,.25); isolation: isolate; }
+.landing-phone::before { content: ""; position: absolute; z-index: -1; top: 19%; left: -13px; width: 6px; height: 48px; border-radius: 5px 0 0 5px; background: #15213b; box-shadow: 0 64px 0 #15213b; }
+.landing-phone::after { content: ""; position: absolute; z-index: -1; top: 27%; right: -13px; width: 6px; height: 76px; border-radius: 0 5px 5px 0; background: #15213b; }
+.landing-phone-screen { position: absolute; inset: 0; overflow: hidden; border-radius: 33px; background: #fbfaf6; }
+.landing-phone-screen img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: top center; background: #fbfaf6; }
+.landing-phone-notch { position: absolute; z-index: 3; top: -1px; left: 50%; width: 35%; height: 23px; border-radius: 0 0 15px 15px; background: #15213b; transform: translateX(-50%); }
+.landing-phone-notch::after { content: ""; position: absolute; top: 7px; left: 50%; width: 42%; height: 4px; border-radius: 999px; background: #556078; transform: translateX(-50%); }
+.landing-phone-hero { width: min(67%, 335px); aspect-ratio: 9 / 18.5; transform: rotate(2.4deg); }
 .landing-visual-tag { position: absolute; z-index: 2; top: 30px; left: -54px; display: flex; align-items: center; gap: 8px; padding: 12px 15px; border: 1px solid rgba(36,120,95,.22); border-radius: 999px; color: var(--landing-green-2); background: #f2fbf6; box-shadow: 0 10px 30px rgba(9,45,34,.13); font-size: 12px; font-weight: 850; transform: rotate(-1.2deg); }
 .landing-floating-card { position: absolute; z-index: 2; right: -34px; bottom: 48px; display: flex; align-items: center; gap: 10px; padding: 13px 16px; border: 2px solid #101e18; border-radius: 14px; background: var(--landing-yellow); box-shadow: 7px 7px 0 #101e18; transform: rotate(-1.2deg); }
 .landing-floating-card span { display: grid; font-size: 11px; }
@@ -90,11 +96,12 @@
 .landing-workflow-copy > svg { color: var(--landing-coral); }
 .landing-workflow-copy h3 { max-width: 430px; margin: 15px 0 18px; font-size: clamp(34px, 4vw, 58px); line-height: 1; letter-spacing: -.055em; }
 .landing-workflow-copy p { max-width: 470px; margin: 0; color: #687a71; font-size: 17px; line-height: 1.7; }
-.landing-workflow-media { min-height: 540px; padding: 36px 36px 0; overflow: hidden; background: var(--landing-green); }
+.landing-workflow-media { min-height: 540px; display: flex; align-items: flex-start; justify-content: center; padding: 28px 30px 0; overflow: hidden; background: var(--landing-green); }
 .landing-workflow-card:nth-child(2) .landing-workflow-media { background: #ef765f; }
 .landing-workflow-card:nth-child(3) .landing-workflow-media { background: #f2cd55; }
 .landing-workflow-card:nth-child(4) .landing-workflow-media { background: #24785f; }
-.landing-workflow-media img { width: 100%; height: 660px; display: block; border-radius: 24px 24px 0 0; object-fit: cover; object-position: top center; box-shadow: 0 16px 45px rgba(6,24,18,.26); }
+.landing-phone-workflow { width: min(76%, 292px); aspect-ratio: 9 / 18.5; margin-top: 8px; box-shadow: 0 28px 54px rgba(6,24,18,.3); transform: rotate(-1.6deg); }
+.landing-workflow-card:nth-child(even) .landing-phone-workflow { transform: rotate(1.6deg); }
 
 .landing-feature-section { width: min(1180px, 88vw); margin: 0 auto 130px; }
 .landing-section-heading { display: grid; gap: 18px; margin-bottom: 42px; }
@@ -149,7 +156,8 @@
   .landing-hero { min-height: 0; grid-template-columns: 1fr; gap: 52px; padding: 58px 0 74px; }
   .landing-hero h1 { font-size: clamp(50px, 15vw, 72px); }
   .landing-hero-copy > p { font-size: 18px; }
-  .landing-hero-visual { justify-self: center; width: min(92%, 480px); height: 520px; box-shadow: 14px 16px 0 #102f25; }
+  .landing-hero-visual { justify-self: center; width: min(92%, 480px); height: 570px; }
+  .landing-phone-hero { width: min(70%, 280px); }
   .landing-visual-tag { top: 24px; left: -18px; max-width: calc(100% - 10px); }
   .landing-floating-card { right: -18px; bottom: 32px; }
   .landing-trust { grid-template-columns: 1fr 1fr; margin-bottom: 90px; }
@@ -159,8 +167,8 @@
   .landing-workflow-card, .landing-workflow-card:nth-child(even) { grid-template-columns: 1fr; }
   .landing-workflow-card:nth-child(even) .landing-workflow-copy { order: 0; }
   .landing-workflow-copy > span { margin-bottom: 34px; }
-  .landing-workflow-media { min-height: 420px; padding: 24px 24px 0; }
-  .landing-workflow-media img { height: 520px; }
+  .landing-workflow-media { min-height: 440px; padding: 20px 20px 0; }
+  .landing-phone-workflow { width: min(72%, 240px); }
   .landing-feature-grid { grid-template-columns: 1fr; }
   .landing-feature-grid article { min-height: 220px; }
   .landing-feature-grid h3 { margin-top: 35px; }
@@ -173,8 +181,11 @@
   .landing-hero-actions { display: grid; }
   .landing-button { width: 100%; }
   .landing-proof { display: grid; }
-  .landing-hero-visual { height: 470px; padding: 12px; border-radius: 25px; }
-  .landing-hero-visual > img { border-radius: 15px; }
+  .landing-hero-visual { height: 510px; }
+  .landing-phone { border-width: 7px; border-radius: 36px; }
+  .landing-phone-screen { border-radius: 28px; }
+  .landing-phone-notch { height: 20px; }
+  .landing-phone-hero { width: min(72%, 248px); }
   .landing-visual-tag { top: 20px; left: -8px; padding: 10px 12px; font-size: 10px; }
   .landing-floating-card { right: -5px; bottom: 24px; }
   .landing-trust span { min-height: 74px; padding: 12px 8px; font-size: 11px; }
@@ -182,8 +193,8 @@
   .landing-workflow-copy { padding: 34px 28px 40px; }
   .landing-workflow-copy h3 { font-size: 38px; }
   .landing-workflow-copy p { font-size: 15px; }
-  .landing-workflow-media { min-height: 350px; padding: 18px 18px 0; }
-  .landing-workflow-media img { height: 430px; }
+  .landing-workflow-media { min-height: 390px; padding: 16px 16px 0; }
+  .landing-phone-workflow { width: min(74%, 220px); }
   .landing-feature-grid article { padding: 28px; }
   .landing-privacy { padding: 38px 28px; border-radius: 22px; }
   .landing-privacy p { font-size: 16px; }

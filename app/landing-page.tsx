@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -106,16 +106,26 @@ const copy = {
 
 const icons = [Scissors, WandSparkles, Palette, Download];
 const featureIcons = [Sparkles, Layers3, Crop, LockKeyhole];
+const landingMedia = {
+  hero: "/landing/screen-hero.png",
+  workflow: ["upload", "settings", "palette", "export"].map((name) => `/landing/screen-${name}.png`),
+};
+
+function PhoneFrame({ src, alt, priority = false, className = "" }: { src: string; alt: string; priority?: boolean; className?: string }) {
+  return (
+    <div className={`landing-phone ${className}`}>
+      <span className="landing-phone-notch" aria-hidden="true" />
+      <div className="landing-phone-screen">
+        <img src={src} alt={alt} width="1179" height="2556" loading={priority ? "eager" : "lazy"} fetchPriority={priority ? "high" : "auto"} />
+      </div>
+    </div>
+  );
+}
 
 export default function LandingPage() {
   const [language, setLanguage] = useState<Language>(() => new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en");
   const content = copy[language];
   const editorUrl = language === "ko" ? "/?lang=ko" : "/";
-  const media = useMemo(() => ({
-    hero: `/landing/hero-${language}.png`,
-    workflow: ["upload", "settings", "palette", "export"].map((name) => `/landing/${name}-${language}.png`),
-  }), [language]);
-
   useEffect(() => {
     document.documentElement.lang = language;
     document.title = language === "ko" ? "WOOJOO Image | 간단한 이미지 벡터 변환" : "WOOJOO Image | Simple image to SVG converter";
@@ -163,9 +173,9 @@ export default function LandingPage() {
             {content.proof.map((item) => <li key={item}><Check size={15} />{item}</li>)}
           </ul>
         </div>
-        <div className={`landing-hero-visual ${language}`}>
+        <div className="landing-hero-visual">
           <div className="landing-visual-tag"><ShieldCheck size={18} />{language === "ko" ? "이미지는 서버에 업로드되지 않아요" : "Your image never leaves this device"}</div>
-          <img src={media.hero} alt={language === "ko" ? "WOOJOO Image 한국어 사용 화면" : "WOOJOO Image editor on mobile"} width={language === "ko" ? 1080 : 1179} height={language === "ko" ? 1350 : 2556} fetchPriority="high" />
+          <PhoneFrame src={landingMedia.hero} alt={language === "ko" ? "휴대폰에서 실행한 WOOJOO Image 화면" : "WOOJOO Image editor running on a phone"} className="landing-phone-hero" priority />
           <div className="landing-floating-card"><Sparkles size={18} /><span><b>SVG</b>{language === "ko" ? "편집 가능한 벡터" : "Editable vector paths"}</span></div>
         </div>
       </section>
@@ -197,7 +207,7 @@ export default function LandingPage() {
                 <p>{item.text}</p>
               </div>
               <div className="landing-workflow-media">
-                <img src={media.workflow[index]} alt={item.title} width={language === "ko" ? 1080 : 1179} height={language === "ko" ? 1350 : 2556} loading="lazy" />
+                <PhoneFrame src={landingMedia.workflow[index]} alt={item.title} className="landing-phone-workflow" />
               </div>
             </article>
           );

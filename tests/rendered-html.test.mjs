@@ -25,12 +25,11 @@ test("deploys only Cloudflare static assets", () => {
 test("ships a lightweight bilingual landing page", () => {
   const landingDirectory = new URL("../dist/landing/", import.meta.url);
   const media = readdirSync(landingDirectory);
-  assert.equal(media.length, 10);
+  assert.equal(media.length, 5);
   assert.ok(media.every((name) => name.endsWith(".png")));
-  assert.ok(media.some((name) => name.endsWith("-en.png")));
-  assert.ok(media.some((name) => name.endsWith("-ko.png")));
+  assert.ok(media.every((name) => name.startsWith("screen-")));
   const mediaBytes = media.reduce((total, name) => total + statSync(new URL(name, landingDirectory)).size, 0);
-  assert.ok(mediaBytes < 3 * 1024 * 1024, `landing media is ${(mediaBytes / 1024 / 1024).toFixed(2)} MB`);
+  assert.ok(mediaBytes < 2 * 1024 * 1024, `landing media is ${(mediaBytes / 1024 / 1024).toFixed(2)} MB`);
 
   const scripts = readdirSync(new URL("../dist/assets/", import.meta.url)).filter((name) => name.endsWith(".js"));
   const bundle = scripts.map((name) => readFileSync(new URL(`../dist/assets/${name}`, import.meta.url), "utf8")).join("\n");
