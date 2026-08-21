@@ -74,14 +74,15 @@ const koreanText: Record<string, string> = {
   "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
   "Brush parts of the selected color that must not be deleted.": "선택한 색상 중 삭제하면 안 되는 부분을 브러시로 지정합니다.", "Use brush": "브러시 사용", "Brush on": "브러시 켜짐",
   "Keep": "유지", "Undo brush": "브러시 취소", "Clear": "지우기", "Brush size": "브러시 크기", "Merge": "병합", "Delete selected": "선택 삭제",
-  "Final crop & export": "최종 자르기 및 내보내기", "Transparent space": "투명 여백", "Auto crop": "자동 자르기", "Already fitted": "이미 맞춤",
-  "Aspect ratio": "가로세로 비율", "Free": "자유", "Crop edges": "자르기 가장자리", "Reset crop": "자르기 초기화", "PNG size": "PNG 크기",
+  "Final crop & export": "최종 자르기 및 내보내기", "Transparent space": "투명 여백", "Auto crop": "자동 크롭", "Already fitted": "이미 맞춤",
+  "Aspect ratio": "가로세로 비율", "Free": "자유", "Crop edges": "자르기 가장자리", "Reset crop": "크롭 초기화", "PNG size": "PNG 크기",
   "Separate objects": "분리된 오브젝트", "SVG": "SVG", "Save": "저장", "Close crop dialog": "자르기 창 닫기",
   "Drag to move": "드래그하여 이동", "Updating vector…": "벡터를 업데이트하는 중…", "colors": "색상", "paths": "패스", "anchors": "앵커", "cubic curves": "큐빅 곡선",
   "Balanced (50):": "균형 (50):", "uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.": "3×3 레이블 정리 1회, 800–1200px 작업 그리드의 곡선 맞춤, 그리고 작품의 0.05% 미만인 분리 조각 제거를 사용합니다.",
   "Private by design.": "개인정보 보호 설계.", "Nothing is uploaded or stored.": "이미지는 업로드되거나 저장되지 않습니다.",
   "Teal areas are protected and will stay when you choose Delete selected. Use the hand button above to move around while zoomed in.": "청록색 영역은 보호되어 선택 삭제를 해도 유지됩니다. 확대 상태에서는 위의 손 도구로 화면을 이동할 수 있습니다.",
   "Fit the canvas to the remaining object after deleting a background color.": "배경색을 삭제한 뒤 남은 오브젝트에 맞춰 캔버스를 조정합니다.",
+  "The canvas was cropped automatically. Choose Reset crop to return to the original canvas.": "캔버스가 자동으로 크롭되었습니다. 크롭 전으로 돌아가려면 크롭 초기화를 누르세요.",
   "disconnected objects detected. Save each with its own fitted canvas.": "개의 분리된 오브젝트를 찾았습니다. 각각의 맞춤 캔버스로 저장하세요.",
   "The bright area is your final canvas. SVG paths stay fully editable.": "밝은 영역이 최종 캔버스입니다. SVG 패스는 계속 편집할 수 있습니다.",
   "Tip:": "팁:", "Likely background": "배경으로 추정", "check the highlighted area, then choose Delete selected.": "강조된 영역을 확인한 뒤 선택 삭제를 누르세요.",
@@ -148,6 +149,7 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState({ index: -1, length: 0 });
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
+  const [autoCropApplied, setAutoCropApplied] = useState(false);
   const [sourceCrop, setSourceCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [zoom, setZoom] = useState(100);
   const [panMode, setPanMode] = useState(false);
@@ -579,16 +581,27 @@ export default function Home() {
 
   const openCrop = useCallback(() => {
     if (!result) return;
-    setCrop({ x: 0, y: 0, width: result.width, height: result.height });
+    const visibleBounds = getVisibleBounds(result);
+    const hasTransparentOuterSpace = visibleBounds.x > 0 || visibleBounds.y > 0 ||
+      visibleBounds.x + visibleBounds.width < result.width ||
+      visibleBounds.y + visibleBounds.height < result.height;
+    setCrop(hasTransparentOuterSpace ? visibleBounds : { x: 0, y: 0, width: result.width, height: result.height });
+    setAutoCropApplied(hasTransparentOuterSpace);
     setExportMessage("");
     setSelectedObjectIndex(null);
     setCropOpen(true);
   }, [result]);
 
+  const resetCrop = useCallback(() => {
+    if (!result) return;
+    setCrop({ x: 0, y: 0, width: result.width, height: result.height });
+    setAutoCropApplied(false);
+  }, [result]);
+
   const setRatio = useCallback((ratio: number | null) => {
     if (!result) return;
     if (!ratio) {
-      setCrop({ x: 0, y: 0, width: result.width, height: result.height });
+      resetCrop();
       return;
     }
     const imageRatio = result.width / result.height;
@@ -597,7 +610,8 @@ export default function Home() {
     if (imageRatio > ratio) width = height * ratio;
     else height = width / ratio;
     setCrop({ x: (result.width - width) / 2, y: (result.height - height) / 2, width, height });
-  }, [result]);
+    setAutoCropApplied(false);
+  }, [resetCrop, result]);
 
   const autoCropBounds = useMemo(() => result ? getVisibleBounds(result) : null, [result]);
   const separateObjects = useMemo(() => result && cropOpen ? getSeparateObjectBounds(result) : [], [cropOpen, result]);
@@ -614,8 +628,9 @@ export default function Home() {
   const autoCrop = useCallback(() => {
     if (!autoCropBounds) return;
     setCrop(autoCropBounds);
-    setExportMessage("Transparent outer area cropped automatically.");
-  }, [autoCropBounds]);
+    setAutoCropApplied(hasTransparentTrim);
+    setExportMessage("");
+  }, [autoCropBounds, hasTransparentTrim]);
 
   const cropInsets = useMemo(() => result ? {
     left: Math.round(crop.x),
@@ -630,6 +645,7 @@ export default function Home() {
     const width = Math.max(1, result.width - next.left - next.right);
     const height = Math.max(1, result.height - next.top - next.bottom);
     setCrop({ x: next.left, y: next.top, width, height });
+    setAutoCropApplied(false);
   }, [cropInsets, result]);
 
   const exportSvg = useCallback(async () => {
@@ -928,8 +944,12 @@ export default function Home() {
               </div>
               <div className="crop-controls">
                 <div className="auto-crop-panel">
-                  <div><label className="control-label">Transparent space</label><p>Fit the canvas to the remaining object after deleting a background color.</p></div>
-                  <button type="button" disabled={!hasTransparentTrim} onClick={autoCrop}><Crop size={14}/>{hasTransparentTrim ? "Auto crop" : "Already fitted"}</button>
+                  <div><label className="control-label">Transparent space</label><p>{autoCropApplied ? (korean ? "캔버스가 자동으로 크롭되었습니다. 크롭 전으로 돌아가려면 크롭 초기화를 누르세요." : "The canvas was cropped automatically. Choose Reset crop to return to the original canvas.") : "Fit the canvas to the remaining object after deleting a background color."}</p></div>
+                  {autoCropApplied ? (
+                    <button type="button" onClick={resetCrop}><RotateCcw size={14}/>{korean ? "크롭 초기화" : "Reset crop"}</button>
+                  ) : (
+                    <button type="button" disabled={!hasTransparentTrim} onClick={autoCrop}><Crop size={14}/>{hasTransparentTrim ? (korean ? "자동 크롭" : "Auto crop") : (korean ? "이미 맞춤" : "Already fitted")}</button>
+                  )}
                 </div>
                 <label className="control-label">Aspect ratio</label>
                 <div className="ratio-grid"><button type="button" onClick={() => setRatio(null)}>Free</button><button type="button" onClick={() => setRatio(1)}>1:1</button><button type="button" onClick={() => setRatio(4 / 5)}>4:5</button><button type="button" onClick={() => setRatio(3 / 2)}>3:2</button><button type="button" onClick={() => setRatio(210 / 297)}>A4</button></div>
@@ -939,7 +959,7 @@ export default function Home() {
                   const maximum = Math.max(0, Math.floor((horizontal ? result.width : result.height) * .48));
                   return <label className="inset-control" key={side}><span>{side[0].toUpperCase() + side.slice(1)}</span><input type="range" min="0" max={maximum} value={Math.min(cropInsets[side], maximum)} onChange={(event) => updateInset(side, Number(event.target.value))}/><output>{cropInsets[side]}px</output></label>;
                 })}
-                <button className="reset-crop" type="button" onClick={() => setRatio(null)}><RotateCcw size={14}/>Reset crop</button>
+                {!autoCropApplied && <button className="reset-crop" type="button" onClick={resetCrop}><RotateCcw size={14}/>Reset crop</button>}
                 <div className="export-section">
                   <div><label className="control-label">PNG size</label><div className="scale-buttons">{[1, 2, 4].map((scale) => <button className={pngScale === scale ? "active" : ""} type="button" key={scale} onClick={() => setPngScale(scale)}>{scale}×</button>)}</div></div>
                   <p>{Math.round(crop.width * pngScale)} × {Math.round(crop.height * pngScale)} px</p>
