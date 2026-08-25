@@ -51,7 +51,7 @@ globalThis.document = {
 
 const vectorUtilsUrl = new URL("../app/vector-utils.ts", import.meta.url);
 vectorUtilsUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-const { createVectorResult } = await import(vectorUtilsUrl.href);
+const { createVectorResult, encodeIco } = await import(vectorUtilsUrl.href);
 
 function makeArtwork(width, height) {
   const imageData = new TestImageData(width, height);
@@ -121,12 +121,16 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v2"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v3"/);
   assert.ok(stats.cubic / drawingCommands >= .3, JSON.stringify(stats));
   assert.ok(result.curveRatio >= 30, `curve ratio: ${result.curveRatio}`);
   assert.ok(stats.move < 40, `too many subpaths: ${stats.move}`);
+  assert.ok(result.nodeCount <= Math.ceil(81 * .7), `expected roughly 30% fewer nodes than v2 baseline: ${result.nodeCount}`);
+  assert.ok(result.cubicCount <= Math.floor(78 * .7), `expected at least 30% fewer cubics than v2 baseline: ${result.cubicCount}`);
+  assert.ok(result.fileSize <= Math.floor(3511 * .85), `expected a smaller SVG than v2 baseline: ${result.fileSize}`);
   assert.ok(!result.palette.some((color) => color.hex === "#73BFDD"));
   assert.ok(result.palette.length <= 4, `unexpected fringe palette: ${result.palette.map((color) => color.hex).join(", ")}`);
+  assert.doesNotMatch(result.svg, /(?:<image\b|data:image|base64|NaN|Infinity)/i);
 });
 
 test("small isolated artwork is traced on an 800px working grid", () => {
@@ -136,4 +140,45 @@ test("small isolated artwork is traced on an 800px working grid", () => {
   assert.match(result.svg, /transform="scale\(0\.4\d* 0\.4\d*\)"/);
   assert.ok(stats.cubic > 0, JSON.stringify(stats));
   assert.ok(stats.move < 40, `too many subpaths: ${stats.move}`);
+  assert.ok(result.nodeCount <= Math.floor(742 * .7), `expected at least 30% fewer nodes than v2 baseline: ${result.nodeCount}`);
+  assert.ok(result.cubicCount <= Math.floor(739 * .7), `expected at least 30% fewer cubics than v2 baseline: ${result.cubicCount}`);
+  assert.ok(result.fileSize <= Math.floor(27241 * .7), `expected at least 30% smaller SVG than v2 baseline: ${result.fileSize}`);
+});
+
+test("anchor simplification changes geometry without changing the indexed artwork", () => {
+  const source = sourceFor(makeArtwork(317, 324));
+  const balanced = createVectorResult(source, 8, "medium", 0);
+  const smoother = createVectorResult(source, 8, "medium", 70);
+  assert.deepEqual(smoother.pixelMap, balanced.pixelMap);
+  assert.deepEqual(smoother.palette.map(({ hex }) => hex), balanced.palette.map(({ hex }) => hex));
+  assert.ok(smoother.nodeCount <= balanced.nodeCount, `${smoother.nodeCount} should not exceed ${balanced.nodeCount}`);
+  assert.ok(smoother.fileSize <= balanced.fileSize, `${smoother.fileSize} should not exceed ${balanced.fileSize}`);
+  assert.doesNotMatch(smoother.svg, /(?:<image\b|data:image|base64|NaN|Infinity)/i);
+});
+
+test("favicon encoder creates a valid multi-size ICO directory", () => {
+  const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+  const images = [16, 32, 48].map((size, index) => ({
+    size,
+    bytes: Uint8Array.from([...pngSignature, index, size]),
+  }));
+  const ico = encodeIco(images);
+  const view = new DataView(ico.buffer);
+
+  assert.equal(view.getUint16(0, true), 0);
+  assert.equal(view.getUint16(2, true), 1);
+  assert.equal(view.getUint16(4, true), 3);
+  let expectedOffset = 6 + images.length * 16;
+  images.forEach((image, index) => {
+    const entry = 6 + index * 16;
+    assert.equal(ico[entry], image.size);
+    assert.equal(ico[entry + 1], image.size);
+    assert.equal(view.getUint16(entry + 4, true), 1);
+    assert.equal(view.getUint16(entry + 6, true), 32);
+    assert.equal(view.getUint32(entry + 8, true), image.bytes.byteLength);
+    assert.equal(view.getUint32(entry + 12, true), expectedOffset);
+    assert.deepEqual([...ico.slice(expectedOffset, expectedOffset + 8)], pngSignature);
+    expectedOffset += image.bytes.byteLength;
+  });
+  assert.equal(ico.byteLength, expectedOffset);
 });

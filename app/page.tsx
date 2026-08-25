@@ -35,6 +35,7 @@ import {
   cropSvg,
   CropBox,
   deleteColors,
+  downloadFavicon,
   downloadPng,
   downloadText,
   extractObjectResult,
@@ -88,6 +89,7 @@ const koreanText: Record<string, string> = {
   "Tip:": "팁:", "Likely background": "배경으로 추정", "check the highlighted area, then choose Delete selected.": "강조된 영역을 확인한 뒤 선택 삭제를 누르세요.",
   "Tip: select": "팁: 선택",
   "SVG saved successfully.": "SVG가 성공적으로 저장되었습니다.", "SVG download started.": "SVG 다운로드가 시작되었습니다.",
+  "Favicon": "파비콘", "Favicon saved successfully.": "파비콘이 성공적으로 저장되었습니다.", "Favicon download started.": "파비콘 다운로드가 시작되었습니다.",
 };
 
 type Snapshot = { palette: PaletteColor[]; pixelMap: Uint8Array };
@@ -676,6 +678,22 @@ export default function Home() {
     }
   }, [crop, fileName, pngScale, result]);
 
+  const exportFavicon = useCallback(async () => {
+    if (!result) return;
+    setExportState("favicon");
+    setExportMessage("");
+    try {
+      const status = await downloadFavicon(result.svg, crop);
+      if (status !== "cancelled") setExportMessage(status === "saved"
+        ? (korean ? "파비콘이 성공적으로 저장되었습니다." : "Favicon saved successfully.")
+        : (korean ? "파비콘 다운로드가 시작되었습니다." : "Favicon download started."));
+    } catch (caught) {
+      setExportMessage(korean ? "파비콘 생성에 실패했습니다. 다시 시도해 주세요." : (caught instanceof Error ? caught.message : "Favicon download failed. Please try again."));
+    } finally {
+      setExportState("");
+    }
+  }, [crop, korean, result]);
+
   const exportObjectSvg = useCallback(async (objectCrop: (typeof separateObjects)[number], index: number) => {
     if (!result) return;
     const state = `object-svg-${index}`;
@@ -964,7 +982,7 @@ export default function Home() {
                   <div><label className="control-label">PNG size</label><div className="scale-buttons">{[1, 2, 4].map((scale) => <button className={pngScale === scale ? "active" : ""} type="button" key={scale} onClick={() => setPngScale(scale)}>{scale}×</button>)}</div></div>
                   <p>{Math.round(crop.width * pngScale)} × {Math.round(crop.height * pngScale)} px</p>
                 </div>
-                <div className="download-buttons"><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportSvg()}><Download size={16}/>{exportState === "svg" ? "Saving…" : "SVG"}</button><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportPng()}><Download size={16}/>{exportState === "png" ? "Rendering…" : `PNG ${pngScale}×`}</button></div>
+                <div className="download-buttons"><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportSvg()}><Download size={16}/>{exportState === "svg" ? (korean ? "저장 중…" : "Saving…") : "SVG"}</button><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportPng()}><Download size={16}/>{exportState === "png" ? (korean ? "렌더링 중…" : "Rendering…") : `PNG ${pngScale}×`}</button><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportFavicon()}><FileImage size={16}/>{exportState === "favicon" ? (korean ? "생성 중…" : "Rendering…") : (korean ? "파비콘" : "Favicon")}</button></div>
                 {separateObjects.length > 1 && (
                   <div className="object-export-panel">
                     <div className="object-export-heading"><div><label className="control-label">Separate objects</label><p>{separateObjects.length} disconnected objects detected. Save each with its own fitted canvas.</p></div><Layers3 size={17}/></div>

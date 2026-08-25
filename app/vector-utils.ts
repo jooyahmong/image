@@ -787,12 +787,46 @@ function normalizePalette(
 
 type VectorPoint = { x: number; y: number };
 
+type CubicCurve = {
+  start: VectorPoint;
+  control1: VectorPoint;
+  control2: VectorPoint;
+  end: VectorPoint;
+};
+
+type FittedCommand =
+  | { type: "L"; end: VectorPoint }
+  | ({ type: "C" } & CubicCurve);
+
 function roundCoordinate(value: number) {
-  return Number(value.toFixed(1));
+  // Keep enough subpixel precision for fitted handles while allowing the
+  // number conversion to remove trailing zeroes and integer decimals.
+  return Number(value.toFixed(2));
 }
 
 function distanceBetween(first: VectorPoint, second: VectorPoint) {
   return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function addPoint(first: VectorPoint, second: VectorPoint) {
+  return { x: first.x + second.x, y: first.y + second.y };
+}
+
+function subtractPoint(first: VectorPoint, second: VectorPoint) {
+  return { x: first.x - second.x, y: first.y - second.y };
+}
+
+function scalePoint(point: VectorPoint, scale: number) {
+  return { x: point.x * scale, y: point.y * scale };
+}
+
+function dotProduct(first: VectorPoint, second: VectorPoint) {
+  return first.x * second.x + first.y * second.y;
+}
+
+function normalized(point: VectorPoint) {
+  const length = Math.hypot(point.x, point.y);
+  return length > 1e-8 ? { x: point.x / length, y: point.y / length } : { x: 0, y: 0 };
 }
 
 function interiorAngle(previous: VectorPoint, current: VectorPoint, next: VectorPoint) {
@@ -804,51 +838,365 @@ function interiorAngle(previous: VectorPoint, current: VectorPoint, next: Vector
   return Math.acos(cosine) * (180 / Math.PI);
 }
 
-function reduceCurveAnchors(points: VectorPoint[], cleanup: CleanupLevel, samplingScale = 1) {
-  const minimumSpacing = { none: 0, light: .35, medium: .7, strong: 1.1 }[cleanup] * Math.max(1, samplingScale);
-  const straightAngle = { none: 180, light: 179, medium: 177.5, strong: 175.5 }[cleanup];
-  let reduced = points.filter((point, index) => index === 0 || distanceBetween(points[index - 1], point) > minimumSpacing);
-  if (reduced.length > 2 && distanceBetween(reduced[0], reduced[reduced.length - 1]) <= minimumSpacing) reduced = reduced.slice(0, -1);
-
-  // Remove only anchors that add virtually no curvature. The remaining
-  // anchors are control landmarks, not polygon vertices: curves are fitted
-  // between them in smoothClosedContour().
-  for (let pass = 0; pass < 2 && reduced.length > 4; pass += 1) {
-    reduced = reduced.filter((point, index, current) => {
-      const previous = current[(index - 1 + current.length) % current.length];
-      const next = current[(index + 1) % current.length];
-      return interiorAngle(previous, point, next) < straightAngle;
-    });
-  }
-  return reduced;
+function pointToLineDistance(point: VectorPoint, start: VectorPoint, end: VectorPoint) {
+  const line = subtractPoint(end, start);
+  const lengthSquared = dotProduct(line, line);
+  if (lengthSquared <= 1e-8) return distanceBetween(point, start);
+  const projection = Math.max(0, Math.min(1, dotProduct(subtractPoint(point, start), line) / lengthSquared));
+  return distanceBetween(point, addPoint(start, scalePoint(line, projection)));
 }
 
-function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, samplingScale = 1) {
-  const anchors = reduceCurveAnchors(points, cleanup, samplingScale);
-  if (anchors.length < 3 || cleanup === "none") return "";
-  const smoothing = { light: .74, medium: .9, strong: 1 }[cleanup];
-  const cornerLimit = { light: 94, medium: 102, strong: 108 }[cleanup];
-  const isCorner = anchors.map((point, index) => interiorAngle(
-    anchors[(index - 1 + anchors.length) % anchors.length],
-    point,
-    anchors[(index + 1) % anchors.length],
-  ) <= cornerLimit);
-  const commands = [`M ${roundCoordinate(anchors[0].x)} ${roundCoordinate(anchors[0].y)}`];
+function deduplicateContour(points: VectorPoint[], minimumSpacing: number) {
+  const deduplicated: VectorPoint[] = [];
+  for (const point of points) {
+    if (!deduplicated.length || distanceBetween(deduplicated[deduplicated.length - 1], point) > minimumSpacing) {
+      deduplicated.push(point);
+    }
+  }
+  if (deduplicated.length > 2 && distanceBetween(deduplicated[0], deduplicated[deduplicated.length - 1]) <= minimumSpacing) {
+    deduplicated.pop();
+  }
+  return deduplicated;
+}
 
-  for (let index = 0; index < anchors.length; index += 1) {
-    const previous = anchors[(index - 1 + anchors.length) % anchors.length];
-    const current = anchors[index];
-    const next = anchors[(index + 1) % anchors.length];
-    const afterNext = anchors[(index + 2) % anchors.length];
-    const firstControl = isCorner[index]
-      ? { x: current.x + (next.x - current.x) / 3, y: current.y + (next.y - current.y) / 3 }
-      : { x: current.x + ((next.x - previous.x) * smoothing) / 6, y: current.y + ((next.y - previous.y) * smoothing) / 6 };
-    const secondControl = isCorner[(index + 1) % anchors.length]
-      ? { x: next.x - (next.x - current.x) / 3, y: next.y - (next.y - current.y) / 3 }
-      : { x: next.x - ((afterNext.x - current.x) * smoothing) / 6, y: next.y - ((afterNext.y - current.y) * smoothing) / 6 };
-    commands.push(
-      `C ${roundCoordinate(firstControl.x)} ${roundCoordinate(firstControl.y)} ${roundCoordinate(secondControl.x)} ${roundCoordinate(secondControl.y)} ${roundCoordinate(next.x)} ${roundCoordinate(next.y)}`,
-    );
+function contourPointAtDistance(points: VectorPoint[], index: number, direction: -1 | 1, targetDistance: number) {
+  let currentIndex = index;
+  let travelled = 0;
+  for (let step = 0; step < points.length - 1 && travelled < targetDistance; step += 1) {
+    const nextIndex = (currentIndex + direction + points.length) % points.length;
+    travelled += distanceBetween(points[currentIndex], points[nextIndex]);
+    currentIndex = nextIndex;
+  }
+  return points[currentIndex];
+}
+
+function refineSubpixelContour(
+  points: VectorPoint[],
+  cleanup: Exclude<CleanupLevel, "none">,
+  samplingScale: number,
+  detailFactor: number,
+) {
+  const weight = { light: .12, medium: .2, strong: .28 }[cleanup];
+  const maximumShift = { light: .35, medium: .55, strong: .75 }[cleanup] * samplingScale * detailFactor;
+  let refined = points;
+  const passes = cleanup === "strong" ? 2 : 1;
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    refined = refined.map((point, index, current) => {
+      const previous = current[(index - 1 + current.length) % current.length];
+      const next = current[(index + 1) % current.length];
+      // A wide turn is raster stair-step noise more often than authored detail.
+      // Move it fractionally toward the local chord, but never move sharp tips.
+      if (interiorAngle(previous, point, next) < 132) return point;
+      const midpoint = scalePoint(addPoint(previous, next), .5);
+      const correction = subtractPoint(midpoint, point);
+      const correctionLength = Math.hypot(correction.x, correction.y);
+      if (correctionLength <= 1e-8) return point;
+      const limited = Math.min(correctionLength, maximumShift) / correctionLength;
+      return addPoint(point, scalePoint(correction, weight * limited));
+    });
+  }
+  return refined;
+}
+
+function simplifyOpenPolyline(points: VectorPoint[], tolerance: number): VectorPoint[] {
+  if (points.length <= 2) return points;
+  let maximumDistance = 0;
+  let splitIndex = 0;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const distance = pointToLineDistance(points[index], points[0], points[points.length - 1]);
+    if (distance > maximumDistance) {
+      maximumDistance = distance;
+      splitIndex = index;
+    }
+  }
+  if (maximumDistance <= tolerance) return [points[0], points[points.length - 1]];
+  const left = simplifyOpenPolyline(points.slice(0, splitIndex + 1), tolerance);
+  const right = simplifyOpenPolyline(points.slice(splitIndex), tolerance);
+  return [...left.slice(0, -1), ...right];
+}
+
+function evaluateCubic(curve: CubicCurve, parameter: number) {
+  const inverse = 1 - parameter;
+  const first = inverse * inverse * inverse;
+  const second = 3 * inverse * inverse * parameter;
+  const third = 3 * inverse * parameter * parameter;
+  const fourth = parameter * parameter * parameter;
+  return {
+    x: curve.start.x * first + curve.control1.x * second + curve.control2.x * third + curve.end.x * fourth,
+    y: curve.start.y * first + curve.control1.y * second + curve.control2.y * third + curve.end.y * fourth,
+  };
+}
+
+function evaluateCubicDerivative(curve: CubicCurve, parameter: number) {
+  const inverse = 1 - parameter;
+  return addPoint(
+    addPoint(
+      scalePoint(subtractPoint(curve.control1, curve.start), 3 * inverse * inverse),
+      scalePoint(subtractPoint(curve.control2, curve.control1), 6 * inverse * parameter),
+    ),
+    scalePoint(subtractPoint(curve.end, curve.control2), 3 * parameter * parameter),
+  );
+}
+
+function evaluateCubicSecondDerivative(curve: CubicCurve, parameter: number) {
+  return addPoint(
+    scalePoint(addPoint(subtractPoint(curve.control2, scalePoint(curve.control1, 2)), curve.start), 6 * (1 - parameter)),
+    scalePoint(addPoint(subtractPoint(curve.end, scalePoint(curve.control2, 2)), curve.control1), 6 * parameter),
+  );
+}
+
+function chordLengthParameters(points: VectorPoint[]) {
+  const parameters = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    parameters.push(parameters[index - 1] + distanceBetween(points[index - 1], points[index]));
+  }
+  const total = parameters[parameters.length - 1];
+  return total > 1e-8 ? parameters.map((value) => value / total) : parameters.map((_, index) => index / (points.length - 1));
+}
+
+function generateBezier(points: VectorPoint[], parameters: number[], leftTangent: VectorPoint, rightTangent: VectorPoint): CubicCurve {
+  const start = points[0];
+  const end = points[points.length - 1];
+  let c00 = 0;
+  let c01 = 0;
+  let c11 = 0;
+  let x0 = 0;
+  let x1 = 0;
+
+  for (let index = 0; index < points.length; index += 1) {
+    const parameter = parameters[index];
+    const inverse = 1 - parameter;
+    const b0 = inverse * inverse * inverse;
+    const b1 = 3 * inverse * inverse * parameter;
+    const b2 = 3 * inverse * parameter * parameter;
+    const b3 = parameter * parameter * parameter;
+    const firstBasis = scalePoint(leftTangent, b1);
+    const secondBasis = scalePoint(rightTangent, b2);
+    const baseline = addPoint(scalePoint(start, b0 + b1), scalePoint(end, b2 + b3));
+    const residual = subtractPoint(points[index], baseline);
+    c00 += dotProduct(firstBasis, firstBasis);
+    c01 += dotProduct(firstBasis, secondBasis);
+    c11 += dotProduct(secondBasis, secondBasis);
+    x0 += dotProduct(firstBasis, residual);
+    x1 += dotProduct(secondBasis, residual);
+  }
+
+  const determinant = c00 * c11 - c01 * c01;
+  const segmentLength = distanceBetween(start, end);
+  let alphaLeft = determinant ? (x0 * c11 - x1 * c01) / determinant : segmentLength / 3;
+  let alphaRight = determinant ? (c00 * x1 - c01 * x0) / determinant : segmentLength / 3;
+  const epsilon = segmentLength * 1e-4;
+  // Long unconstrained handles can pass every sampled contour point yet bow
+  // far outside the intended letter or icon between those samples. A cubic
+  // needs about 0.55× of its chord per handle to describe a quarter circle;
+  // 0.75× leaves room for organic curves without allowing visible loops or
+  // swollen strokes.
+  const maximumHandle = segmentLength * .75;
+  if (!Number.isFinite(alphaLeft) || !Number.isFinite(alphaRight) || alphaLeft < epsilon || alphaRight < epsilon) {
+    alphaLeft = segmentLength / 3;
+    alphaRight = segmentLength / 3;
+  }
+  alphaLeft = Math.min(alphaLeft, maximumHandle);
+  alphaRight = Math.min(alphaRight, maximumHandle);
+  let minimumX = Number.POSITIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minimumX = Math.min(minimumX, point.x);
+    minimumY = Math.min(minimumY, point.y);
+    maximumX = Math.max(maximumX, point.x);
+    maximumY = Math.max(maximumY, point.y);
+  }
+  const clampToContourBounds = (point: VectorPoint) => ({
+    x: Math.max(minimumX, Math.min(maximumX, point.x)),
+    y: Math.max(minimumY, Math.min(maximumY, point.y)),
+  });
+  return {
+    start,
+    // A Bézier lies inside the convex hull of its controls. Keeping both
+    // controls inside the sampled contour bounds prevents one color layer
+    // from bulging beyond a neighboring outline between otherwise valid
+    // anchors.
+    control1: clampToContourBounds(addPoint(start, scalePoint(leftTangent, alphaLeft))),
+    control2: clampToContourBounds(addPoint(end, scalePoint(rightTangent, alphaRight))),
+    end,
+  };
+}
+
+function cubicFitError(points: VectorPoint[], curve: CubicCurve, parameters: number[]) {
+  let maximumSquaredError = 0;
+  let splitIndex = Math.floor(points.length / 2);
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const delta = subtractPoint(evaluateCubic(curve, parameters[index]), points[index]);
+    const squaredError = dotProduct(delta, delta);
+    if (squaredError > maximumSquaredError) {
+      maximumSquaredError = squaredError;
+      splitIndex = index;
+    }
+  }
+  // Checking only the original anchors permits a cubic to swing far outside
+  // the artwork between two matching samples. Measure every inter-anchor
+  // midpoint as well; this rejects loops and swollen letter strokes while
+  // still allowing long curves that remain close to the traced contour.
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const parameter = (parameters[index] + parameters[index + 1]) / 2;
+    const expected = scalePoint(addPoint(points[index], points[index + 1]), .5);
+    const delta = subtractPoint(evaluateCubic(curve, parameter), expected);
+    // The straight midpoint is an approximation of the traced curve between
+    // anchors, so use a 10× tolerance for this supplemental overshoot check.
+    const squaredError = dotProduct(delta, delta) * .01;
+    if (squaredError > maximumSquaredError) {
+      maximumSquaredError = squaredError;
+      splitIndex = Math.max(1, Math.min(points.length - 2, index + 1));
+    }
+  }
+  return { maximumSquaredError, splitIndex };
+}
+
+function reparameterize(points: VectorPoint[], curve: CubicCurve, parameters: number[]) {
+  const adjusted = parameters.map((parameter, index) => {
+    if (index === 0 || index === parameters.length - 1) return parameter;
+    const position = evaluateCubic(curve, parameter);
+    const firstDerivative = evaluateCubicDerivative(curve, parameter);
+    const secondDerivative = evaluateCubicSecondDerivative(curve, parameter);
+    const difference = subtractPoint(position, points[index]);
+    const denominator = dotProduct(firstDerivative, firstDerivative) + dotProduct(difference, secondDerivative);
+    if (Math.abs(denominator) <= 1e-8) return parameter;
+    return Math.max(0, Math.min(1, parameter - dotProduct(difference, firstDerivative) / denominator));
+  });
+  for (let index = 1; index < adjusted.length; index += 1) {
+    if (adjusted[index] <= adjusted[index - 1]) return parameters;
+  }
+  return adjusted;
+}
+
+function fitOpenCurve(
+  points: VectorPoint[],
+  leftTangent: VectorPoint,
+  rightTangent: VectorPoint,
+  errorTolerance: number,
+  lineTolerance: number,
+  depth = 0,
+): FittedCommand[] {
+  const end = points[points.length - 1];
+  if (points.length <= 2) return [{ type: "L", end }];
+  const maximumLineError = points.slice(1, -1).reduce(
+    (maximum, point) => Math.max(maximum, pointToLineDistance(point, points[0], end)),
+    0,
+  );
+  if (maximumLineError <= lineTolerance) return [{ type: "L", end }];
+
+  let parameters = chordLengthParameters(points);
+  let curve = generateBezier(points, parameters, leftTangent, rightTangent);
+  let error = cubicFitError(points, curve, parameters);
+  const squaredTolerance = errorTolerance * errorTolerance;
+  if (error.maximumSquaredError <= squaredTolerance) return [{ type: "C", ...curve }];
+
+  if (error.maximumSquaredError <= squaredTolerance * 4) {
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      parameters = reparameterize(points, curve, parameters);
+      curve = generateBezier(points, parameters, leftTangent, rightTangent);
+      error = cubicFitError(points, curve, parameters);
+      if (error.maximumSquaredError <= squaredTolerance) return [{ type: "C", ...curve }];
+    }
+  }
+
+  if (depth >= 20 || error.splitIndex <= 0 || error.splitIndex >= points.length - 1) {
+    return [{ type: "C", ...curve }];
+  }
+  const split = error.splitIndex;
+  const leftCenterTangent = normalized(subtractPoint(points[split - 1], points[split]));
+  const rightCenterTangent = normalized(subtractPoint(points[split + 1], points[split]));
+  return [
+    ...fitOpenCurve(points.slice(0, split + 1), leftTangent, leftCenterTangent, errorTolerance, lineTolerance, depth + 1),
+    ...fitOpenCurve(points.slice(split), rightCenterTangent, rightTangent, errorTolerance, lineTolerance, depth + 1),
+  ];
+}
+
+function contourCorners(
+  points: VectorPoint[],
+  cleanup: Exclude<CleanupLevel, "none">,
+  samplingScale: number,
+  detailFactor: number,
+) {
+  const cornerLimit = { light: 106, medium: 110, strong: 114 }[cleanup];
+  const inspectionDistance = { light: 2.2, medium: 2.8, strong: 3.4 }[cleanup] * samplingScale * Math.sqrt(detailFactor);
+  const candidates = points.map((point, index) => {
+    const previous = contourPointAtDistance(points, index, -1, inspectionDistance);
+    const next = contourPointAtDistance(points, index, 1, inspectionDistance);
+    return { index, point, angle: interiorAngle(previous, point, next) };
+  }).filter(({ angle }) => angle <= cornerLimit).sort((first, second) => first.angle - second.angle);
+  const minimumSeparation = inspectionDistance * 1.35;
+  const selected: typeof candidates = [];
+  for (const candidate of candidates) {
+    if (selected.every(({ point }) => distanceBetween(point, candidate.point) >= minimumSeparation)) selected.push(candidate);
+  }
+  return selected.map(({ index }) => index).sort((first, second) => first - second);
+}
+
+function closedContourSegments(points: VectorPoint[], corners: number[]) {
+  if (!corners.length) return [[...points, points[0]]];
+  return corners.map((start, cornerIndex) => {
+    const end = corners[(cornerIndex + 1) % corners.length];
+    const segment = [points[start]];
+    let index = start;
+    while (index !== end) {
+      index = (index + 1) % points.length;
+      segment.push(points[index]);
+    }
+    return segment;
+  }).filter((segment) => segment.length > 1);
+}
+
+function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, samplingScale = 1, anchorSimplification = 0) {
+  if (cleanup === "none") return "";
+  const activeCleanup = cleanup as Exclude<CleanupLevel, "none">;
+  const scale = Math.max(1, samplingScale);
+  const simplification = Math.max(0, Math.min(100, anchorSimplification)) / 100;
+  const minimumSpacing = { light: .08, medium: .12, strong: .18 }[activeCleanup] * scale;
+  let contour = deduplicateContour(points, minimumSpacing);
+  if (contour.length < 3) return "";
+  let minimumX = Number.POSITIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  for (const point of contour) {
+    minimumX = Math.min(minimumX, point.x);
+    minimumY = Math.min(minimumY, point.y);
+    maximumX = Math.max(maximumX, point.x);
+    maximumY = Math.max(maximumY, point.y);
+  }
+  const minimumDimension = Math.min(maximumX - minimumX, maximumY - minimumY);
+  // One source-pixel of fitting error is harmless on a large silhouette but
+  // can noticeably change a small eye, letter counter, or pointed accent.
+  // Scale the geometry budget by feature size so small authored details keep
+  // their shape while large contours still collapse into long curves.
+  const detailFactor = Math.max(.38, Math.min(1, minimumDimension / (72 * scale)));
+  contour = refineSubpixelContour(contour, activeCleanup, scale, detailFactor);
+  const corners = contourCorners(contour, activeCleanup, scale, detailFactor);
+  const errorTolerance = { light: .58, medium: 1.05, strong: 1.38 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
+  const lineTolerance = { light: .24, medium: .42, strong: .62 }[activeCleanup] * scale * detailFactor * (1 + simplification);
+  const rdpTolerance = errorTolerance * .22;
+  const segments = closedContourSegments(contour, corners);
+  const start = segments[0]?.[0];
+  if (!start) return "";
+  const commands = [`M ${roundCoordinate(start.x)} ${roundCoordinate(start.y)}`];
+
+  for (const rawSegment of segments) {
+    const segment = simplifyOpenPolyline(rawSegment, rdpTolerance);
+    if (segment.length < 2) continue;
+    const leftTangent = normalized(subtractPoint(segment[1], segment[0]));
+    const rightTangent = normalized(subtractPoint(segment[segment.length - 2], segment[segment.length - 1]));
+    const fitted = fitOpenCurve(segment, leftTangent, rightTangent, errorTolerance, lineTolerance);
+    for (const command of fitted) {
+      if (command.type === "L") {
+        commands.push(`L ${roundCoordinate(command.end.x)} ${roundCoordinate(command.end.y)}`);
+      } else {
+        commands.push(`C ${roundCoordinate(command.control1.x)} ${roundCoordinate(command.control1.y)} ${roundCoordinate(command.control2.x)} ${roundCoordinate(command.control2.y)} ${roundCoordinate(command.end.x)} ${roundCoordinate(command.end.y)}`);
+      }
+    }
   }
   commands.push("Z");
   return commands.join(" ");
@@ -880,13 +1228,29 @@ function rawContourPath(segments: TracedSegment[]) {
 
 function contourAnchors(segments: TracedSegment[]) {
   if (!segments.length) return [];
-  const points = [{ x: segments[0].x1, y: segments[0].y1 }, ...segments.map(segmentEnd)];
+  const points: VectorPoint[] = [{ x: segments[0].x1, y: segments[0].y1 }];
+  for (const segment of segments) {
+    if (segment.type !== "Q" || segment.x3 === undefined || segment.y3 === undefined) {
+      points.push(segmentEnd(segment));
+      continue;
+    }
+    // Preserve the tracer's curve evidence for the global fitter instead of
+    // keeping only each short segment endpoint.
+    for (let step = 1; step <= 4; step += 1) {
+      const parameter = step / 4;
+      const inverse = 1 - parameter;
+      points.push({
+        x: inverse * inverse * segment.x1 + 2 * inverse * parameter * segment.x2 + parameter * parameter * segment.x3,
+        y: inverse * inverse * segment.y1 + 2 * inverse * parameter * segment.y2 + parameter * parameter * segment.y3,
+      });
+    }
+  }
   return points.length > 2 && distanceBetween(points[0], points[points.length - 1]) < .01 ? points.slice(0, -1) : points;
 }
 
-function fittedContourPath(segments: TracedSegment[], cleanup: CleanupLevel, samplingScale: number) {
+function fittedContourPath(segments: TracedSegment[], cleanup: CleanupLevel, samplingScale: number, anchorSimplification: number) {
   if (cleanup === "none") return rawContourPath(segments);
-  const fitted = smoothClosedContour(contourAnchors(segments), cleanup, samplingScale);
+  const fitted = smoothClosedContour(contourAnchors(segments), cleanup, samplingScale, anchorSimplification);
   return fitted || rawContourPath(segments);
 }
 
@@ -928,13 +1292,19 @@ function tracedPathArea(layer: TracedPath[], pathIndex: number) {
   return Math.max(0, outer - holes);
 }
 
-function tracedPathData(layer: TracedPath[], pathIndex: number, cleanup: CleanupLevel, samplingScale: number) {
+function tracedPathData(
+  layer: TracedPath[],
+  pathIndex: number,
+  cleanup: CleanupLevel,
+  samplingScale: number,
+  anchorSimplification: number,
+) {
   const path = layer[pathIndex];
   if (!path || path.isholepath) return "";
-  const contours = [fittedContourPath(path.segments, cleanup, samplingScale)];
+  const contours = [fittedContourPath(path.segments, cleanup, samplingScale, anchorSimplification)];
   for (const holeIndex of path.holechildren) {
     const hole = layer[holeIndex];
-    if (hole?.segments.length) contours.push(fittedContourPath(hole.segments, cleanup, samplingScale));
+    if (hole?.segments.length) contours.push(fittedContourPath(hole.segments, cleanup, samplingScale, anchorSimplification));
   }
   return contours.filter(Boolean).join(" ");
 }
@@ -1000,7 +1370,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const tracedLayer = traced.layers[layerIndex] ?? [];
     for (let pathIndex = 0; pathIndex < tracedLayer.length; pathIndex += 1) {
       if (!keepTracedPath(tracedLayer, pathIndex, traceImageData.width * traceImageData.height, cleanup)) continue;
-      const pathData = tracedPathData(tracedLayer, pathIndex, cleanup, samplingScale);
+      const pathData = tracedPathData(tracedLayer, pathIndex, cleanup, samplingScale, anchorSimplification);
       if (pathData) pathsByLayer[layerIndex].push(pathData);
     }
   }
@@ -1013,7 +1383,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v2" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v3" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
@@ -1463,4 +1833,82 @@ export async function downloadPng(svg: string, crop: CropBox, scale: number, fil
   URL.revokeObjectURL(blobUrl);
   const pngBlob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG export failed.")), "image/png"));
   return finishDownload(pngBlob, filename, choice.handle);
+}
+
+export type IcoImage = { size: number; bytes: Uint8Array };
+
+export function encodeIco(images: IcoImage[]) {
+  if (!images.length) throw new Error("At least one favicon size is required.");
+  const ordered = [...images].sort((first, second) => first.size - second.size);
+  const directorySize = 6 + ordered.length * 16;
+  const totalSize = directorySize + ordered.reduce((sum, image) => sum + image.bytes.byteLength, 0);
+  const output = new Uint8Array(totalSize);
+  const view = new DataView(output.buffer);
+
+  view.setUint16(0, 0, true);
+  view.setUint16(2, 1, true);
+  view.setUint16(4, ordered.length, true);
+
+  let imageOffset = directorySize;
+  ordered.forEach((image, index) => {
+    if (!Number.isInteger(image.size) || image.size < 1 || image.size > 256) {
+      throw new Error("Favicon sizes must be whole numbers from 1 to 256 pixels.");
+    }
+    const entryOffset = 6 + index * 16;
+    output[entryOffset] = image.size === 256 ? 0 : image.size;
+    output[entryOffset + 1] = image.size === 256 ? 0 : image.size;
+    output[entryOffset + 2] = 0;
+    output[entryOffset + 3] = 0;
+    view.setUint16(entryOffset + 4, 1, true);
+    view.setUint16(entryOffset + 6, 32, true);
+    view.setUint32(entryOffset + 8, image.bytes.byteLength, true);
+    view.setUint32(entryOffset + 12, imageOffset, true);
+    output.set(image.bytes, imageOffset);
+    imageOffset += image.bytes.byteLength;
+  });
+
+  return output;
+}
+
+async function renderFaviconPng(svg: string, crop: CropBox, size: number) {
+  const cropped = cropSvg(svg, crop);
+  const blobUrl = URL.createObjectURL(new Blob([cropped], { type: "image/svg+xml" }));
+  const image = new Image();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Favicon rendering failed."));
+      image.src = blobUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Favicon rendering is not supported in this browser.");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    const scale = Math.min(size / crop.width, size / crop.height);
+    const width = Math.max(1, crop.width * scale);
+    const height = Math.max(1, crop.height * scale);
+    context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+    const pngBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Favicon rendering failed.")), "image/png");
+    });
+    return new Uint8Array(await pngBlob.arrayBuffer());
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+export async function downloadFavicon(svg: string, crop: CropBox, filename = "favicon.ico") {
+  const mime = "image/vnd.microsoft.icon";
+  const choice = await requestSaveHandle(filename, "Favicon icon", mime, ".ico");
+  if (choice.cancelled) return "cancelled" as const;
+  const sizes = [16, 32, 48];
+  const images = await Promise.all(sizes.map(async (size) => ({
+    size,
+    bytes: await renderFaviconPng(svg, crop, size),
+  })));
+  const ico = encodeIco(images);
+  return finishDownload(new Blob([ico], { type: mime }), filename, choice.handle);
 }

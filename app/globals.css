@@ -253,7 +253,7 @@ button { color: inherit; }
 .scale-buttons { display: flex; gap: 4px; margin-top: 8px; }
 .scale-buttons button { width: 38px; padding: 7px 0; border: 1px solid var(--line); border-radius: 7px; color: #68756f; background: #fff; cursor: pointer; font-size: 10.8px; font-weight: 850; }
 .scale-buttons button.active { color: #fff; border-color: var(--green); background: var(--green); }
-.download-buttons { display: grid; grid-template-columns: 1fr 1.3fr; gap: 7px; margin-top: 16px; }
+.download-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 16px; }
 .download-buttons button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 12px 8px; border-radius: 9px; cursor: pointer; font-size: 12px; font-weight: 850; }
 .download-buttons button:disabled { opacity: .55; cursor: wait; }
 .secondary-download { color: var(--green); border: 1px solid #a9c8ba; background: #fff; }
