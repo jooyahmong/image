@@ -33,7 +33,7 @@ const copy = {
     benefitIntro: "Made for icons, stickers, clipart, simple illustrations, lettering, and other flat artwork.",
     workflow: [
       { step: "01", title: "Crop before you trace", text: "Upload PNG, JPG, or WEBP and select only the area you need. Start without unnecessary whitespace." },
-      { step: "02", title: "Tune colors and curves", text: "Choose the color count, smoothness, and anchor simplification that best fits your artwork." },
+      { step: "02", title: "Choose your colors", text: "Set the number of colors and WOOJOO Image automatically balances cleanup and curve detail." },
       { step: "03", title: "Edit the palette precisely", text: "Merge similar colors, remove a background, recolor shapes, or protect fine details with the brush." },
       { step: "04", title: "Auto-crop and export", text: "Fit the canvas to the finished artwork and save grouped, fill-only SVG paths or transparent PNG files." },
     ],
@@ -75,7 +75,7 @@ const copy = {
     benefitIntro: "아이콘, 스티커, 클립아트, 단순 일러스트, 레터링처럼 색상 면이 분명한 이미지에 잘 맞습니다.",
     workflow: [
       { step: "01", title: "올리면서 바로 크롭", text: "PNG, JPG, WEBP 이미지를 올리고 필요한 영역만 먼저 선택하세요. 불필요한 여백 없이 시작할 수 있어요." },
-      { step: "02", title: "색상과 곡선 조절", text: "작품에 맞춰 색상 수, 부드러움, 앵커 단순화 정도를 직접 조절하세요." },
+      { step: "02", title: "색상 수 선택", text: "색상 수만 정하면 영역 정리와 곡선 디테일은 WOOJOO Image가 균형 있게 자동 처리합니다." },
       { step: "03", title: "팔레트를 정확하게 수정", text: "비슷한 색을 합치고, 배경을 지우고, 색을 바꾸거나 브러시로 섬세한 영역을 보호할 수 있어요." },
       { step: "04", title: "자동 크롭 후 내보내기", text: "완성된 오브젝트에 캔버스를 자동으로 맞추고, 그룹화된 면 중심 SVG 또는 투명 PNG로 저장하세요." },
     ],

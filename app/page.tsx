@@ -63,13 +63,12 @@ const presets = {
   botanical: { label: "Botanical", colors: ["#1F3D34", "#477D62", "#8DB596", "#D8E2C6", "#F4E9D8"] },
   mono: { label: "Ink & paper", colors: ["#202725", "#59635F", "#A8AFAB", "#E1E2DC", "#FAF8F0"] },
 };
+const FIXED_CLEANUP: CleanupLevel = "medium";
+const FIXED_ANCHOR_SIMPLIFICATION = 50;
 
 const koreanText: Record<string, string> = {
   "Vector settings": "벡터 설정", "Number of colors": "색상 수", "Visible colors, excluding transparency": "투명도를 제외한 표시 색상",
-  "Smoothness": "부드러움", "Label cleanup, tracing size, and curve simplification": "영역 정리, 추적 크기 및 곡선 단순화",
-  "Precise": "정확", "Balanced": "균형", "Smooth": "매끈", "Anchor simplification": "앵커 단순화",
-  "Reduce SVG nodes for smoother curves. Higher values remove more detail.": "SVG 노드를 줄여 곡선을 더 부드럽게 만듭니다. 높을수록 세부 묘사가 줄어듭니다.",
-  "Keep detail": "디테일 유지", "Smoother": "더 부드럽게", "Reduce colors & vectorize": "색상 줄이기 및 벡터화", "Building your palette…": "팔레트를 만드는 중…",
+  "Reduce colors & vectorize": "색상 줄이기 및 벡터화", "Building your palette…": "팔레트를 만드는 중…",
   "Transparent outer edges are trimmed automatically.": "투명한 바깥 여백은 자동으로 잘립니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
   "Edit palette": "팔레트 편집", "Apply": "적용", "Select a color to highlight its exact area.": "색상을 선택해 정확한 영역을 강조 표시하세요.",
   "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
@@ -79,7 +78,6 @@ const koreanText: Record<string, string> = {
   "Aspect ratio": "가로세로 비율", "Free": "자유", "Crop edges": "자르기 가장자리", "Reset crop": "크롭 초기화", "PNG size": "PNG 크기",
   "Separate objects": "분리된 오브젝트", "SVG": "SVG", "Save": "저장", "Close crop dialog": "자르기 창 닫기",
   "Drag to move": "드래그하여 이동", "Updating vector…": "벡터를 업데이트하는 중…", "colors": "색상", "paths": "패스", "anchors": "앵커", "cubic curves": "큐빅 곡선",
-  "Balanced (50):": "균형 (50):", "uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.": "3×3 레이블 정리 1회, 800–1200px 작업 그리드의 곡선 맞춤, 그리고 작품의 0.05% 미만인 분리 조각 제거를 사용합니다.",
   "Private by design.": "개인정보 보호 설계.", "Nothing is uploaded or stored.": "이미지는 업로드되거나 저장되지 않습니다.",
   "Teal areas are protected and will stay when you choose Delete selected. Use the hand button above to move around while zoomed in.": "청록색 영역은 보호되어 선택 삭제를 해도 유지됩니다. 확대 상태에서는 위의 손 도구로 화면을 이동할 수 있습니다.",
   "Fit the canvas to the remaining object after deleting a background color.": "배경색을 삭제한 뒤 남은 오브젝트에 맞춰 캔버스를 조정합니다.",
@@ -100,13 +98,6 @@ type BrushPoint = { x: number; y: number; scale: number; radius: number };
 
 function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
-}
-
-function smoothnessToCleanup(value: number): CleanupLevel {
-  if (value <= 0) return "none";
-  if (value < 35) return "light";
-  if (value < 75) return "medium";
-  return "strong";
 }
 
 export default function Home() {
@@ -140,8 +131,6 @@ export default function Home() {
   const [result, setResult] = useState<VectorResult | null>(null);
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
-  const [smoothness, setSmoothness] = useState(50);
-  const [anchorSimplification, setAnchorSimplification] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -192,8 +181,7 @@ export default function Home() {
     return () => observer.disconnect();
   }, [language]);
   const colorSliderProgress = ((colorCount - 2) / 18) * 100;
-  const smoothnessProgress = smoothness;
-  const cleanup = smoothnessToCleanup(smoothness);
+  const cleanup = FIXED_CLEANUP;
   const panEnabled = zoom > 100 && (panMode || !brushMode);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
@@ -252,7 +240,7 @@ export default function Home() {
     try {
       const fullCrop = sourceCrop.x === 0 && sourceCrop.y === 0 && sourceCrop.width === source.width && sourceCrop.height === source.height;
       const conversionSource = fullCrop ? source : cropRasterSource(source, sourceCrop);
-      const converted = createVectorResult(conversionSource, colorCount, cleanup, anchorSimplification);
+      const converted = createVectorResult(conversionSource, colorCount, FIXED_CLEANUP, FIXED_ANCHOR_SIMPLIFICATION);
       setSource(conversionSource);
       setSourceCrop({ x: 0, y: 0, width: conversionSource.width, height: conversionSource.height });
       setResult(converted);
@@ -273,7 +261,7 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
-  }, [anchorSimplification, cleanup, colorCount, pushHistory, source, sourceCrop]);
+  }, [colorCount, pushHistory, source, sourceCrop]);
 
   const startSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
     if (!source || !sourceCropStage.current) return;
@@ -825,13 +813,6 @@ export default function Home() {
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <div className="setting-row"><div><label htmlFor="smoothness">Smoothness</label><small>Label cleanup, tracing size, and curve simplification</small></div><span className="value-box">{smoothness}</span></div>
-            <input id="smoothness" className="range-control smoothness-range" type="range" min="0" max="100" value={smoothness} style={{ background: `linear-gradient(90deg, var(--green) 0 ${smoothnessProgress}%, #e9ece8 ${smoothnessProgress}% 100%)` }} onChange={(event) => setSmoothness(Number(event.target.value))}/>
-            <div className="range-labels" aria-hidden="true"><span>Precise</span><span>Balanced</span><span>Smooth</span></div>
-            <div className="setting-row"><div><label htmlFor="anchor-simplification">Anchor simplification</label><small>Reduce SVG nodes for smoother curves. Higher values remove more detail.</small></div><span className="value-box">{anchorSimplification}%</span></div>
-            <input id="anchor-simplification" className="range-control" type="range" min="0" max="100" value={anchorSimplification} style={{ background: `linear-gradient(90deg, var(--green) 0 ${anchorSimplification}%, #e9ece8 ${anchorSimplification}% 100%)` }} onChange={(event) => setAnchorSimplification(Number(event.target.value))}/>
-            <div className="range-labels" aria-hidden="true"><span>Keep detail</span><span>Balanced</span><span>Smoother</span></div>
-            <div className="tip-card"><Sparkles size={16}/><p><b>Balanced (50):</b> uses one 3×3 label pass, fits curves on an 800–1200px working grid, and removes disconnected fragments below 0.05% of the artwork.</p></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>

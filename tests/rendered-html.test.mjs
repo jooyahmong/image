@@ -35,5 +35,13 @@ test("ships a lightweight bilingual landing page", () => {
   const bundle = scripts.map((name) => readFileSync(new URL(`../dist/assets/${name}`, import.meta.url), "utf8")).join("\n");
   assert.match(bundle, /Your image stays on this device/);
   assert.match(bundle, /이미지는 사용자의 기기에만 머뭅니다/);
+  assert.doesNotMatch(bundle, /Anchor simplification|Label cleanup, tracing size|Balanced \(50\)|앵커 단순화|영역 정리, 추적 크기/);
   assert.doesNotMatch(bundle, /\.mp4/);
+});
+
+test("uses fixed balanced vector settings without exposing redundant controls", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const FIXED_CLEANUP: CleanupLevel = "medium"/);
+  assert.match(page, /const FIXED_ANCHOR_SIMPLIFICATION = 50/);
+  assert.doesNotMatch(page, /id="smoothness"|id="anchor-simplification"|Balanced \(50\):/);
 });
