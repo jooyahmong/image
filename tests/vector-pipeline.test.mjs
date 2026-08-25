@@ -51,7 +51,7 @@ globalThis.document = {
 
 const vectorUtilsUrl = new URL("../app/vector-utils.ts", import.meta.url);
 vectorUtilsUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-const { createVectorResult, encodeIco } = await import(vectorUtilsUrl.href);
+const { createVectorResult, deleteColors, encodeIco } = await import(vectorUtilsUrl.href);
 
 function makeArtwork(width, height) {
   const imageData = new TestImageData(width, height);
@@ -145,6 +145,26 @@ function makeNestedArtwork() {
   return imageData;
 }
 
+function makeSmallEyesArtwork() {
+  const width = 240;
+  const height = 160;
+  const imageData = new TestImageData(width, height);
+  const eyes = [[100, 78], [140, 78]];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const isBody = x >= 20 && x < 220 && y >= 20 && y < 140;
+      const isEye = eyes.some(([eyeX, eyeY]) => Math.hypot(x - eyeX, y - eyeY) <= 3);
+      const color = isEye ? [20, 20, 20] : isBody ? [226, 112, 42] : [250, 250, 250];
+      imageData.data[offset] = color[0];
+      imageData.data[offset + 1] = color[1];
+      imageData.data[offset + 2] = color[2];
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
 function commandStats(svg) {
   return {
     move: (svg.match(/\bM\s/g) ?? []).length,
@@ -193,6 +213,22 @@ test("anchor simplification changes geometry without changing the indexed artwor
   assert.ok(smoother.nodeCount <= balanced.nodeCount, `${smoother.nodeCount} should not exceed ${balanced.nodeCount}`);
   assert.ok(smoother.fileSize <= balanced.fileSize, `${smoother.fileSize} should not exceed ${balanced.fileSize}`);
   assert.doesNotMatch(smoother.svg, /(?:<image\b|data:image|base64|NaN|Infinity)/i);
+});
+
+test("midpoint simplification preserves small foreground eyes before and after background deletion", () => {
+  const initial = createVectorResult(sourceFor(makeSmallEyesArtwork()), 3, "medium", 50);
+  const blackIndex = initial.palette.findIndex(({ hex }) => hex === "#141414");
+  const backgroundIndex = initial.palette.findIndex(({ backgroundCandidate }) => backgroundCandidate);
+  const blackLayer = initial.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${blackIndex}"[^>]*data-stack-depth="[1-9]"[^>]*>[\\s\\S]*?<path[^>]* d="([^"]+)"`));
+
+  assert.ok(blackIndex >= 0 && backgroundIndex >= 0);
+  assert.equal(initial.anchorSimplification, 50);
+  assert.match(initial.svg, /data-detail-preservation="foreground"/);
+  assert.ok((blackLayer?.[1].match(/M\s/g) ?? []).length >= 2, "both small eyes must remain visible");
+
+  const withoutBackground = deleteColors(initial, [backgroundIndex], "medium");
+  assert.equal(withoutBackground.anchorSimplification, 50, "palette edits must retain the same tracing quality");
+  assert.match(withoutBackground.svg, /data-detail-preservation="foreground"/);
 });
 
 test("contained foreground colors are stacked over a solid lower path", () => {

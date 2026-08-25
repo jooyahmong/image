@@ -43,6 +43,7 @@ export type VectorResult = {
   artworkCount: number;
   maxArtworkObjectCount: number;
   fileSize: number;
+  anchorSimplification: number;
 };
 
 export type CropBox = { x: number; y: number; width: number; height: number };
@@ -1311,17 +1312,28 @@ function tracedPathData(
   return contours.filter(Boolean).join(" ");
 }
 
-function keepTracedPath(layer: TracedPath[], pathIndex: number, canvasArea: number, cleanup: CleanupLevel) {
+function keepTracedPath(
+  layer: TracedPath[],
+  pathIndex: number,
+  canvasArea: number,
+  cleanup: CleanupLevel,
+  preserveForeground = false,
+) {
   const path = layer[pathIndex];
   if (!path || path.isholepath) return false;
-  const minimumShare = { none: 0, light: .0001, medium: .0005, strong: .0005 }[cleanup];
+  const cleanupShare = { none: 0, light: .0001, medium: .0005, strong: .0005 }[cleanup];
+  // Small nested shapes are commonly intentional facial features, counters,
+  // or lettering details. Keep a stricter dust filter for exterior artwork,
+  // but do not discard a foreground object just because it occupies less than
+  // 0.05% of the full canvas.
+  const minimumShare = preserveForeground && cleanupShare ? Math.min(cleanupShare, .0001) : cleanupShare;
   if (!minimumShare) return true;
   const area = tracedPathArea(layer, pathIndex);
   const nodeCount = path.segments.length + path.holechildren.reduce((total, holeIndex) => total + (layer[holeIndex]?.segments.length ?? 0), 0);
   const minimumArea = canvasArea * minimumShare;
   // The area threshold is the primary filter. Tiny low-node shapes get a
   // second, stricter gate because they are overwhelmingly quantization dust.
-  return area >= minimumArea && (nodeCount > 8 || area >= minimumArea * 2);
+  return area >= minimumArea && (preserveForeground || nodeCount > 8 || area >= minimumArea * 2);
 }
 
 function compoundPath(pathData: string[], color: string, _strokeWidth: number) {
@@ -1609,7 +1621,9 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   const traceOptions = {
     ltres: traceSettings.lineTolerance * (1 + simplification * 1.8),
     qtres: traceSettings.curveTolerance * (1 + simplification * 2.4),
-    pathomit: Math.round(traceSettings.pathOmit * (1 + simplification * 2.5)),
+    // Anchor simplification may reduce geometry inside a path, but it must not
+    // increase the threshold that removes an entire small object.
+    pathomit: traceSettings.pathOmit,
     rightangleenhance: false,
     colorsampling: 0,
     numberofcolors: tracePalette.length,
@@ -1644,7 +1658,13 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   for (let planIndex = 0; planIndex < tracedPlans.length; planIndex += 1) {
     const tracedLayer = tracedPlans[planIndex].tracedLayer ?? [];
     for (let pathIndex = 0; pathIndex < tracedLayer.length; pathIndex += 1) {
-      if (!keepTracedPath(tracedLayer, pathIndex, traceImageData.width * traceImageData.height, cleanup)) continue;
+      if (!keepTracedPath(
+        tracedLayer,
+        pathIndex,
+        traceImageData.width * traceImageData.height,
+        cleanup,
+        tracedPlans[planIndex].depth > 0,
+      )) continue;
       const pathData = tracedPathData(tracedLayer, pathIndex, cleanup, samplingScale, anchorSimplification);
       if (pathData) pathsByPlan[planIndex].push(pathData);
     }
@@ -1659,7 +1679,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v5" data-color-underlap="true" data-color-stacking="containment" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v5" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
@@ -1705,6 +1725,7 @@ function resultFromParts(
     curveRatio: drawingCommandCount ? Math.round((cubicCount / drawingCommandCount) * 100) : 0,
     ...artworkStats,
     fileSize: new Blob([svg], { type: "image/svg+xml" }).size,
+    anchorSimplification,
   };
 }
 
@@ -1804,7 +1825,7 @@ export function createVectorResult(source: RasterSource, colorCount: number, cle
 }
 
 export function recolorResult(result: VectorResult, palette: PaletteColor[], cleanup: CleanupLevel) {
-  return resultFromParts(result.width, result.height, result.pixelMap, result.alphaMap, palette, cleanup);
+  return resultFromParts(result.width, result.height, result.pixelMap, result.alphaMap, palette, cleanup, result.anchorSimplification);
 }
 
 export function mergeResult(result: VectorResult, selected: number[], cleanup: CleanupLevel) {
@@ -1830,7 +1851,7 @@ export function mergeResult(result: VectorResult, selected: number[], cleanup: C
     visible += 1;
   });
   palette.forEach((color) => { color.share = visible ? (color.count / visible) * 100 : 0; });
-  return resultFromParts(result.width, result.height, pixelMap, result.alphaMap, palette, cleanup);
+  return resultFromParts(result.width, result.height, pixelMap, result.alphaMap, palette, cleanup, result.anchorSimplification);
 }
 
 export function deleteColors(
@@ -1856,6 +1877,7 @@ export function deleteColors(
     result.alphaMap,
     result.palette.map((color) => ({ ...color })),
     cleanup,
+    result.anchorSimplification,
   );
 }
 
