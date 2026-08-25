@@ -178,9 +178,10 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v5"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v6"/);
   assert.match(result.svg, /data-color-underlap="true"/);
   assert.match(result.svg, /data-color-stacking="containment"/);
+  assert.match(result.svg, /data-curve-continuity="adaptive"/);
   assert.ok(stats.cubic / drawingCommands >= .3, JSON.stringify(stats));
   assert.ok(result.curveRatio >= 30, `curve ratio: ${result.curveRatio}`);
   assert.ok(stats.move < 40, `too many subpaths: ${stats.move}`);
@@ -225,6 +226,7 @@ test("midpoint simplification preserves small foreground eyes before and after b
   assert.equal(initial.anchorSimplification, 50);
   assert.match(initial.svg, /data-detail-preservation="foreground"/);
   assert.ok((blackLayer?.[1].match(/M\s/g) ?? []).length >= 2, "both small eyes must remain visible");
+  assert.doesNotMatch(blackLayer?.[1] ?? "", /\bL\s/, "compact round eyes should use fitted curves instead of angular line segments");
 
   const withoutBackground = deleteColors(initial, [backgroundIndex], "medium");
   assert.equal(withoutBackground.anchorSimplification, 50, "palette edits must retain the same tracing quality");

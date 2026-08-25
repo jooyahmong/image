@@ -877,10 +877,15 @@ function refineSubpixelContour(
   samplingScale: number,
   detailFactor: number,
 ) {
-  const weight = { light: .12, medium: .2, strong: .28 }[cleanup];
-  const maximumShift = { light: .35, medium: .55, strong: .75 }[cleanup] * samplingScale * detailFactor;
+  // Large silhouettes can absorb more sub-pixel reconstruction than a tiny
+  // eye, counter, or accent. Scale both the movement and pass count by the
+  // feature itself instead of applying one global smoothing strength.
+  const adaptiveStrength = .55 + detailFactor * .45;
+  const weight = { light: .16, medium: .28, strong: .34 }[cleanup] * adaptiveStrength;
+  const maximumShift = { light: .42, medium: .78, strong: .92 }[cleanup] * samplingScale * adaptiveStrength;
   let refined = points;
-  const passes = cleanup === "strong" ? 2 : 1;
+  const passes = cleanup === "strong" ? (detailFactor >= .72 ? 3 : 2) : cleanup === "medium" && detailFactor >= .72 ? 2 : 1;
+  const originalArea = polygonArea(points);
 
   for (let pass = 0; pass < passes; pass += 1) {
     refined = refined.map((point, index, current) => {
@@ -888,7 +893,8 @@ function refineSubpixelContour(
       const next = current[(index + 1) % current.length];
       // A wide turn is raster stair-step noise more often than authored detail.
       // Move it fractionally toward the local chord, but never move sharp tips.
-      if (interiorAngle(previous, point, next) < 132) return point;
+      const smoothingAngle = 126 + (1 - detailFactor) * 12;
+      if (interiorAngle(previous, point, next) < smoothingAngle) return point;
       const midpoint = scalePoint(addPoint(previous, next), .5);
       const correction = subtractPoint(midpoint, point);
       const correctionLength = Math.hypot(correction.x, correction.y);
@@ -896,6 +902,19 @@ function refineSubpixelContour(
       const limited = Math.min(correctionLength, maximumShift) / correctionLength;
       return addPoint(point, scalePoint(correction, weight * limited));
     });
+  }
+
+  // Laplacian-style edge reconstruction can contract a closed silhouette.
+  // Restore nearly the same area so smoothing removes stair steps without
+  // making the artwork visibly thinner.
+  const refinedArea = polygonArea(refined);
+  if (originalArea > 1e-8 && refinedArea > 1e-8) {
+    const areaScale = Math.max(.97, Math.min(1.03, Math.sqrt(originalArea / refinedArea)));
+    if (Math.abs(areaScale - 1) > 1e-4) {
+      const center = refined.reduce((sum, point) => addPoint(sum, point), { x: 0, y: 0 });
+      const centroid = scalePoint(center, 1 / refined.length);
+      refined = refined.map((point) => addPoint(centroid, scalePoint(subtractPoint(point, centroid), areaScale)));
+    }
   }
   return refined;
 }
@@ -1108,8 +1127,14 @@ function fitOpenCurve(
     return [{ type: "C", ...curve }];
   }
   const split = error.splitIndex;
-  const leftCenterTangent = normalized(subtractPoint(points[split - 1], points[split]));
-  const rightCenterTangent = normalized(subtractPoint(points[split + 1], points[split]));
+  // Both child curves must share one tangent line at the split. Independent
+  // one-sided tangents reproduce raster kinks even when both curve fits are
+  // individually accurate.
+  let leftCenterTangent = normalized(subtractPoint(points[split - 1], points[split + 1]));
+  if (Math.hypot(leftCenterTangent.x, leftCenterTangent.y) <= 1e-8) {
+    leftCenterTangent = normalized(subtractPoint(points[split - 1], points[split]));
+  }
+  const rightCenterTangent = scalePoint(leftCenterTangent, -1);
   return [
     ...fitOpenCurve(points.slice(0, split + 1), leftTangent, leftCenterTangent, errorTolerance, lineTolerance, depth + 1),
     ...fitOpenCurve(points.slice(split), rightCenterTangent, rightTangent, errorTolerance, lineTolerance, depth + 1),
@@ -1129,8 +1154,16 @@ function contourCorners(
   const candidates = points.map((point, index) => {
     const previous = contourPointAtDistance(points, index, -1, inspectionDistance);
     const next = contourPointAtDistance(points, index, 1, inspectionDistance);
-    return { index, point, angle: interiorAngle(previous, point, next) };
-  }).filter(({ angle }) => angle <= cornerLimit).sort((first, second) => first.angle - second.angle);
+    const widePrevious = contourPointAtDistance(points, index, -1, inspectionDistance * 2.25);
+    const wideNext = contourPointAtDistance(points, index, 1, inspectionDistance * 2.25);
+    return {
+      index,
+      point,
+      angle: interiorAngle(previous, point, next),
+      persistentAngle: interiorAngle(widePrevious, point, wideNext),
+    };
+  }).filter(({ angle, persistentAngle }) => angle <= cornerLimit && (angle <= 72 || persistentAngle <= 138))
+    .sort((first, second) => first.angle - second.angle);
   const minimumSeparation = inspectionDistance * 1.35;
   const selected: typeof candidates = [];
   for (const candidate of candidates) {
@@ -1172,13 +1205,21 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, sampl
     maximumY = Math.max(maximumY, point.y);
   }
   const minimumDimension = Math.min(maximumX - minimumX, maximumY - minimumY);
+  const maximumDimension = Math.max(maximumX - minimumX, maximumY - minimumY);
   // One source-pixel of fitting error is harmless on a large silhouette but
   // can noticeably change a small eye, letter counter, or pointed accent.
   // Scale the geometry budget by feature size so small authored details keep
   // their shape while large contours still collapse into long curves.
   const detailFactor = Math.max(.38, Math.min(1, minimumDimension / (72 * scale)));
   contour = refineSubpixelContour(contour, activeCleanup, scale, detailFactor);
-  const corners = contourCorners(contour, activeCleanup, scale, detailFactor);
+  const boxArea = Math.max(1e-8, (maximumX - minimumX) * (maximumY - minimumY));
+  const fillRatio = polygonArea(contour) / boxArea;
+  const aspectRatio = maximumDimension / Math.max(1e-8, minimumDimension);
+  // Compact, rounded islands are usually eyes, dots, counters, or badges.
+  // Treating their raster quadrants as authored corners produces the subtle
+  // angular eyes visible at high zoom.
+  const roundedCompactDetail = minimumDimension <= 28 * scale && aspectRatio <= 1.8 && fillRatio >= .62 && fillRatio <= .9;
+  const corners = roundedCompactDetail ? [] : contourCorners(contour, activeCleanup, scale, detailFactor);
   const errorTolerance = { light: .66, medium: 1.2, strong: 1.58 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
   const lineTolerance = { light: .24, medium: .42, strong: .62 }[activeCleanup] * scale * detailFactor * (1 + simplification);
   const rdpTolerance = errorTolerance * .27;
@@ -1190,9 +1231,15 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, sampl
   for (const rawSegment of segments) {
     const segment = simplifyOpenPolyline(rawSegment, rdpTolerance);
     if (segment.length < 2) continue;
-    const leftTangent = normalized(subtractPoint(segment[1], segment[0]));
-    const rightTangent = normalized(subtractPoint(segment[segment.length - 2], segment[segment.length - 1]));
-    const fitted = fitOpenCurve(segment, leftTangent, rightTangent, errorTolerance, lineTolerance);
+    const isClosedSegment = distanceBetween(segment[0], segment[segment.length - 1]) <= .01 && segment.length > 3;
+    const seamTangent = isClosedSegment
+      ? normalized(subtractPoint(segment[1], segment[segment.length - 2]))
+      : normalized(subtractPoint(segment[1], segment[0]));
+    const leftTangent = seamTangent;
+    const rightTangent = isClosedSegment
+      ? scalePoint(seamTangent, -1)
+      : normalized(subtractPoint(segment[segment.length - 2], segment[segment.length - 1]));
+    const fitted = fitOpenCurve(segment, leftTangent, rightTangent, errorTolerance, roundedCompactDetail ? 0 : lineTolerance);
     for (const command of fitted) {
       if (command.type === "L") {
         commands.push(`L ${roundCoordinate(command.end.x)} ${roundCoordinate(command.end.y)}`);
@@ -1679,7 +1726,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v5" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v6" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
