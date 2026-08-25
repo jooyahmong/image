@@ -1121,7 +1121,9 @@ function contourCorners(
   samplingScale: number,
   detailFactor: number,
 ) {
-  const cornerLimit = { light: 106, medium: 110, strong: 114 }[cleanup];
+  // Raster stair steps often look like shallow corners. Keep authored sharp
+  // turns, but let wider turns remain part of one longer fitted curve.
+  const cornerLimit = { light: 102, medium: 103, strong: 105 }[cleanup];
   const inspectionDistance = { light: 2.2, medium: 2.8, strong: 3.4 }[cleanup] * samplingScale * Math.sqrt(detailFactor);
   const candidates = points.map((point, index) => {
     const previous = contourPointAtDistance(points, index, -1, inspectionDistance);
@@ -1176,9 +1178,9 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, sampl
   const detailFactor = Math.max(.38, Math.min(1, minimumDimension / (72 * scale)));
   contour = refineSubpixelContour(contour, activeCleanup, scale, detailFactor);
   const corners = contourCorners(contour, activeCleanup, scale, detailFactor);
-  const errorTolerance = { light: .58, medium: 1.05, strong: 1.38 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
+  const errorTolerance = { light: .66, medium: 1.2, strong: 1.58 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
   const lineTolerance = { light: .24, medium: .42, strong: .62 }[activeCleanup] * scale * detailFactor * (1 + simplification);
-  const rdpTolerance = errorTolerance * .22;
+  const rdpTolerance = errorTolerance * .27;
   const segments = closedContourSegments(contour, corners);
   const start = segments[0]?.[0];
   if (!start) return "";
@@ -1327,6 +1329,270 @@ function compoundPath(pathData: string[], color: string, _strokeWidth: number) {
   return `<path fill="${color}" fill-rule="evenodd" clip-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
 }
 
+type TraceInternals = {
+  pathscan: (layer: number[][], pathOmit: number) => unknown;
+  internodes: (paths: unknown, options: unknown) => unknown;
+  batchtracepaths: (paths: unknown, lineTolerance: number, curveTolerance: number) => TracedPath[];
+};
+
+function indexedTraceMap(imageData: ImageData, palette: PaletteColor[]) {
+  const labels = new Uint8Array(imageData.width * imageData.height).fill(TRANSPARENT_INDEX);
+  const exactColors = new Map<number, number>();
+  palette.forEach((color, index) => exactColors.set((color.r << 16) | (color.g << 8) | color.b, index));
+  for (let pixel = 0; pixel < labels.length; pixel += 1) {
+    const offset = pixel * 4;
+    if (imageData.data[offset + 3] < 10) continue;
+    const key = (imageData.data[offset] << 16) | (imageData.data[offset + 1] << 8) | imageData.data[offset + 2];
+    const exact = exactColors.get(key);
+    if (exact !== undefined) {
+      labels[pixel] = exact;
+      continue;
+    }
+    let closest = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < palette.length; index += 1) {
+      const distance = colorDistance(imageData.data[offset], imageData.data[offset + 1], imageData.data[offset + 2], palette[index]);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        closest = index;
+      }
+    }
+    labels[pixel] = closest;
+  }
+  return labels;
+}
+
+type StackComponent = {
+  id: number;
+  colorIndex: number;
+  pixels: number[];
+  contacts: Map<number, number>;
+  touchesExterior: boolean;
+  parent: number;
+  depth: number;
+};
+
+type TraceLayerPlan = {
+  colorIndex: number;
+  depth: number;
+  mask: Uint8Array;
+  order: number;
+};
+
+function exteriorTransparency(labels: Uint8Array, width: number, height: number) {
+  const exterior = new Uint8Array(labels.length);
+  const queue = new Int32Array(labels.length);
+  let read = 0;
+  let write = 0;
+  const add = (pixel: number) => {
+    if (labels[pixel] !== TRANSPARENT_INDEX || exterior[pixel]) return;
+    exterior[pixel] = 1;
+    queue[write++] = pixel;
+  };
+  for (let x = 0; x < width; x += 1) {
+    add(x);
+    add((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y += 1) {
+    add(y * width);
+    add(y * width + width - 1);
+  }
+  while (read < write) {
+    const pixel = queue[read++];
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    if (x > 0) add(pixel - 1);
+    if (x + 1 < width) add(pixel + 1);
+    if (y > 0) add(pixel - width);
+    if (y + 1 < height) add(pixel + width);
+  }
+  return exterior;
+}
+
+function stackedLayerPlans(labels: Uint8Array, width: number, height: number) {
+  const componentAtPixel = new Int32Array(labels.length).fill(-1);
+  const queue = new Int32Array(labels.length);
+  const components: StackComponent[] = [];
+
+  for (let start = 0; start < labels.length; start += 1) {
+    if (labels[start] === TRANSPARENT_INDEX || componentAtPixel[start] >= 0) continue;
+    const id = components.length;
+    const colorIndex = labels[start];
+    const pixels: number[] = [];
+    let read = 0;
+    let write = 0;
+    componentAtPixel[start] = id;
+    queue[write++] = start;
+    while (read < write) {
+      const pixel = queue[read++];
+      pixels.push(pixel);
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      const visit = (next: number) => {
+        if (labels[next] !== colorIndex || componentAtPixel[next] >= 0) return;
+        componentAtPixel[next] = id;
+        queue[write++] = next;
+      };
+      if (x > 0) visit(pixel - 1);
+      if (x + 1 < width) visit(pixel + 1);
+      if (y > 0) visit(pixel - width);
+      if (y + 1 < height) visit(pixel + width);
+    }
+    components.push({ id, colorIndex, pixels, contacts: new Map(), touchesExterior: false, parent: -1, depth: -1 });
+  }
+
+  const exterior = exteriorTransparency(labels, width, height);
+  for (const component of components) {
+    for (const pixel of component.pixels) {
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      const inspect = (next: number) => {
+        if (labels[next] === TRANSPARENT_INDEX) {
+          if (exterior[next]) component.touchesExterior = true;
+          return;
+        }
+        const neighbor = componentAtPixel[next];
+        if (neighbor !== component.id) component.contacts.set(neighbor, (component.contacts.get(neighbor) ?? 0) + 1);
+      };
+      if (x > 0) inspect(pixel - 1); else component.touchesExterior = true;
+      if (x + 1 < width) inspect(pixel + 1); else component.touchesExterior = true;
+      if (y > 0) inspect(pixel - width); else component.touchesExterior = true;
+      if (y + 1 < height) inspect(pixel + width); else component.touchesExterior = true;
+    }
+  }
+
+  // Region depth is the shortest path from the visible exterior through the
+  // color-region adjacency graph. It separates a black outer outline from a
+  // disconnected black eye even though both use the same palette swatch.
+  let read = 0;
+  let write = 0;
+  for (const component of components) {
+    if (!component.touchesExterior) continue;
+    component.depth = 0;
+    queue[write++] = component.id;
+  }
+  if (!write && components.length) {
+    components[0].depth = 0;
+    queue[write++] = 0;
+  }
+  while (read < write) {
+    const component = components[queue[read++]];
+    for (const neighborId of component.contacts.keys()) {
+      const neighbor = components[neighborId];
+      if (neighbor.depth >= 0) continue;
+      neighbor.depth = component.depth + 1;
+      queue[write++] = neighbor.id;
+    }
+  }
+
+  for (const component of components) {
+    let strongestContact = -1;
+    for (const [neighborId, contact] of component.contacts) {
+      if (components[neighborId].depth !== component.depth - 1 || contact <= strongestContact) continue;
+      strongestContact = contact;
+      component.parent = neighborId;
+    }
+  }
+
+  const plansByKey = new Map<string, TraceLayerPlan>();
+  const planFor = (component: StackComponent) => {
+    const key = `${component.depth}:${component.colorIndex}`;
+    let plan = plansByKey.get(key);
+    if (!plan) {
+      plan = { colorIndex: component.colorIndex, depth: component.depth, mask: new Uint8Array(labels.length), order: -1 };
+      plansByKey.set(key, plan);
+    }
+    return plan;
+  };
+
+  // Every visible component also fills each ancestor mask. The result looks
+  // identical, but moving an eye, mouth, or other foreground color in a vector
+  // editor reveals the solid lower artwork instead of a punched-out hole.
+  for (const component of components) {
+    let ancestor: StackComponent | undefined = component;
+    let guard = 0;
+    while (ancestor && guard++ <= components.length) {
+      const mask = planFor(ancestor).mask;
+      for (const pixel of component.pixels) mask[pixel] = 1;
+      ancestor = ancestor.parent >= 0 ? components[ancestor.parent] : undefined;
+    }
+  }
+
+  const plans = [...plansByKey.values()].sort((first, second) => first.depth - second.depth || first.colorIndex - second.colorIndex);
+  plans.forEach((plan, order) => { plan.order = order; });
+  const visibleOrder = new Int32Array(labels.length).fill(-1);
+  for (const component of components) {
+    const plan = plansByKey.get(`${component.depth}:${component.colorIndex}`);
+    if (!plan) continue;
+    for (const pixel of component.pixels) visibleOrder[pixel] = plan.order;
+  }
+  return { plans, visibleOrder };
+}
+
+function buildUnderlapLayerMask(
+  seedMask: Uint8Array,
+  visibleOrder: Int32Array,
+  width: number,
+  height: number,
+  currentOrder: number,
+  radius: number,
+) {
+  let mask = seedMask.slice();
+  for (let step = 0; step < radius; step += 1) {
+    const expanded = mask.slice();
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const pixel = y * width + x;
+        if (!mask[pixel]) continue;
+        for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+          const nextY = y + yOffset;
+          if (nextY < 0 || nextY >= height) continue;
+          for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+            if (!xOffset && !yOffset) continue;
+            const nextX = x + xOffset;
+            if (nextX < 0 || nextX >= width) continue;
+            const nextPixel = nextY * width + nextX;
+            if (visibleOrder[nextPixel] > currentOrder) expanded[nextPixel] = 1;
+          }
+        }
+      }
+    }
+    mask = expanded;
+  }
+  return mask;
+}
+
+function edgeNodesFromMask(mask: Uint8Array, width: number, height: number) {
+  const layer = Array.from({ length: height + 2 }, () => new Array<number>(width + 2).fill(0));
+  const at = (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] ? 1 : 0;
+  for (let nodeY = 1; nodeY < height + 2; nodeY += 1) {
+    const y = nodeY - 1;
+    for (let nodeX = 1; nodeX < width + 2; nodeX += 1) {
+      const x = nodeX - 1;
+      layer[nodeY][nodeX] = at(x - 1, y - 1) + at(x, y - 1) * 2 + at(x, y) * 4 + at(x - 1, y) * 8;
+    }
+  }
+  return layer;
+}
+
+function traceStackedLayers(
+  imageData: ImageData,
+  palette: PaletteColor[],
+  traceOptions: Record<string, unknown> & { pathomit: number; ltres: number; qtres: number },
+  underlapRadius: number,
+) {
+  const labels = indexedTraceMap(imageData, palette);
+  const internals = ImageTracer as unknown as TraceInternals;
+  const { plans, visibleOrder } = stackedLayerPlans(labels, imageData.width, imageData.height);
+  return plans.map((plan) => {
+    const radius = plan.order < plans.length - 1 ? underlapRadius : 0;
+    const mask = buildUnderlapLayerMask(plan.mask, visibleOrder, imageData.width, imageData.height, plan.order, radius);
+    const scanned = internals.pathscan(edgeNodesFromMask(mask, imageData.width, imageData.height), traceOptions.pathomit);
+    const interpolated = internals.internodes(scanned, traceOptions);
+    return { ...plan, tracedLayer: internals.batchtracepaths(interpolated, traceOptions.ltres, traceOptions.qtres) };
+  });
+}
+
 function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: CleanupLevel, anchorSimplification = 0) {
   const traceSettings = {
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .2, minimumDimension: 800, maximumDimension: 1600 },
@@ -1362,28 +1628,38 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   // Read ImageTracer's fitted segment data directly. Re-parsing its SVG made
   // curve fitting all-or-nothing: one short contour could force an entire
   // color path back to pixel-following L commands.
-  const traced = ImageTracer.imagedataToTracedata(traceImageData, traceOptions);
   const samplingScale = Math.max(traceImageData.width / imageData.width, traceImageData.height / imageData.height);
+  const underlapRadius = cleanup === "none" ? 0 : Math.max(1, Math.round({ light: .65, medium: 1, strong: 1.25 }[cleanup] * Math.max(1, samplingScale)));
+  const tracedPlans = underlapRadius
+    ? traceStackedLayers(traceImageData, palette, traceOptions, underlapRadius)
+    : ImageTracer.imagedataToTracedata(traceImageData, traceOptions).layers.slice(0, palette.length).map((tracedLayer, colorIndex) => ({
+      colorIndex,
+      depth: 0,
+      order: colorIndex,
+      mask: new Uint8Array(),
+      tracedLayer,
+    }));
 
-  const pathsByLayer = palette.map(() => [] as string[]);
-  for (let layerIndex = 0; layerIndex < palette.length; layerIndex += 1) {
-    const tracedLayer = traced.layers[layerIndex] ?? [];
+  const pathsByPlan = tracedPlans.map(() => [] as string[]);
+  for (let planIndex = 0; planIndex < tracedPlans.length; planIndex += 1) {
+    const tracedLayer = tracedPlans[planIndex].tracedLayer ?? [];
     for (let pathIndex = 0; pathIndex < tracedLayer.length; pathIndex += 1) {
       if (!keepTracedPath(tracedLayer, pathIndex, traceImageData.width * traceImageData.height, cleanup)) continue;
       const pathData = tracedPathData(tracedLayer, pathIndex, cleanup, samplingScale, anchorSimplification);
-      if (pathData) pathsByLayer[layerIndex].push(pathData);
+      if (pathData) pathsByPlan[planIndex].push(pathData);
     }
   }
-  const layers = pathsByLayer.map((paths, index) => {
+  const layers = pathsByPlan.map((paths, planIndex) => {
     if (!paths.length) return "";
-    const color = palette[index];
-    // One compound path per color keeps Illustrator's Layers panel clean. All
-    // substantial islands of the same color remain editable as subpaths, but
-    // they no longer arrive as hundreds of separate dot objects.
+    const plan = tracedPlans[planIndex];
+    const color = palette[plan.colorIndex];
+    // One compound path per color and containment depth keeps related islands
+    // grouped while allowing the same swatch to appear both behind and above
+    // another color when the artwork requires that stacking order.
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
-    return `<g id="vector-layer-${index + 1}" class="vector-layer" data-color-index="${index}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
+    return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v3" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v5" data-color-underlap="true" data-color-stacking="containment" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(

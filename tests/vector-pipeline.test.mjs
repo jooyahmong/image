@@ -108,6 +108,43 @@ function sourceFor(imageData) {
   };
 }
 
+function makeUnderlapArtwork() {
+  const width = 240;
+  const height = 160;
+  const imageData = new TestImageData(width, height);
+  for (let y = 20; y < 140; y += 1) {
+    for (let x = 20; x < 220; x += 1) {
+      const offset = (y * width + x) * 4;
+      const inner = x >= 80 && x < 160 && y >= 50 && y < 110;
+      imageData.data[offset] = inner ? 22 : 226;
+      imageData.data[offset + 1] = inner ? 112 : 54;
+      imageData.data[offset + 2] = inner ? 190 : 42;
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
+function makeNestedArtwork() {
+  const width = 240;
+  const height = 160;
+  const imageData = new TestImageData(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const isOrange = x >= 20 && x < 220 && y >= 20 && y < 140;
+      const isBlack = x >= 80 && x < 160 && y >= 50 && y < 110;
+      const isWhiteEye = x >= 100 && x < 140 && y >= 65 && y < 95;
+      const color = isWhiteEye ? [250, 250, 250] : isBlack ? [20, 20, 20] : isOrange ? [226, 112, 42] : [250, 250, 250];
+      imageData.data[offset] = color[0];
+      imageData.data[offset + 1] = color[1];
+      imageData.data[offset + 2] = color[2];
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
 function commandStats(svg) {
   return {
     move: (svg.match(/\bM\s/g) ?? []).length,
@@ -121,7 +158,9 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v3"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v5"/);
+  assert.match(result.svg, /data-color-underlap="true"/);
+  assert.match(result.svg, /data-color-stacking="containment"/);
   assert.ok(stats.cubic / drawingCommands >= .3, JSON.stringify(stats));
   assert.ok(result.curveRatio >= 30, `curve ratio: ${result.curveRatio}`);
   assert.ok(stats.move < 40, `too many subpaths: ${stats.move}`);
@@ -154,6 +193,30 @@ test("anchor simplification changes geometry without changing the indexed artwor
   assert.ok(smoother.nodeCount <= balanced.nodeCount, `${smoother.nodeCount} should not exceed ${balanced.nodeCount}`);
   assert.ok(smoother.fileSize <= balanced.fileSize, `${smoother.fileSize} should not exceed ${balanced.fileSize}`);
   assert.doesNotMatch(smoother.svg, /(?:<image\b|data:image|base64|NaN|Infinity)/i);
+});
+
+test("contained foreground colors are stacked over a solid lower path", () => {
+  const result = createVectorResult(sourceFor(makeUnderlapArtwork()), 2, "medium");
+  const lowerMatch = result.svg.match(/id="vector-layer-1"[^>]*data-stack-depth="0"[\s\S]*?<path[^>]* d="([^"]+)"/);
+  const upperMatch = result.svg.match(/id="vector-layer-2"[^>]*data-stack-depth="1"[\s\S]*?<path[^>]* d="([^"]+)"/);
+  assert.ok(lowerMatch?.[1] && upperMatch?.[1]);
+  const lowerSubpaths = lowerMatch[1].match(/M\s[\s\S]*?Z/g) ?? [];
+  const upperSubpaths = upperMatch[1].match(/M\s[\s\S]*?Z/g) ?? [];
+  assert.equal(lowerSubpaths.length, 1, "the lower color must stay solid beneath the foreground object");
+  assert.ok(upperSubpaths.length >= 1);
+});
+
+test("the same color can be emitted at separate background and foreground depths", () => {
+  const result = createVectorResult(sourceFor(makeNestedArtwork()), 3, "medium");
+  const groups = [...result.svg.matchAll(/<g id="vector-layer-\d+"[^>]*data-color-index="(\d+)"[^>]*data-stack-depth="(\d+)"[^>]*>[\s\S]*?<\/g>/g)]
+    .map((match) => ({ colorIndex: Number(match[1]), depth: Number(match[2]), svg: match[0] }));
+  const whiteIndex = result.palette.findIndex(({ hex }) => hex === "#FAFAFA");
+  const whiteGroups = groups.filter(({ colorIndex }) => colorIndex === whiteIndex);
+  assert.deepEqual(whiteGroups.map(({ depth }) => depth), [0, 3]);
+  const orangeGroup = groups.find(({ depth }) => depth === 1);
+  assert.ok(orangeGroup, "the middle fill should be its own stacked layer");
+  const orangePath = orangeGroup.svg.match(/<path[^>]* d="([^"]+)"/)?.[1] ?? "";
+  assert.equal((orangePath.match(/M\s/g) ?? []).length, 1, "the middle fill must not contain an eye-shaped hole");
 });
 
 test("favicon encoder creates a valid multi-size ICO directory", () => {
