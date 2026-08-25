@@ -936,6 +936,89 @@ function simplifyOpenPolyline(points: VectorPoint[], tolerance: number): VectorP
   return [...left.slice(0, -1), ...right];
 }
 
+function shouldEmitStraightLine(points: VectorPoint[], absoluteTolerance: number, relativeTolerance = 0) {
+  if (points.length <= 2) return true;
+  const chordLength = distanceBetween(points[0], points[points.length - 1]);
+  if (chordLength <= 1e-8) return false;
+  const maximumDeviation = points.slice(1, -1).reduce(
+    (maximum, point) => Math.max(maximum, pointToLineDistance(point, points[0], points[points.length - 1])),
+    0,
+  );
+  // Long logo and type strokes need a little more room for raster stair steps,
+  // while recursively fitted organic curves must keep the stricter absolute
+  // budget so short arcs are not flattened into a chain of line segments.
+  const allowedDeviation = relativeTolerance > 0
+    ? Math.max(absoluteTolerance, Math.min(absoluteTolerance * 2.75, chordLength * relativeTolerance))
+    : absoluteTolerance;
+  return maximumDeviation <= allowedDeviation;
+}
+
+function simplifyPolylineIndexes(points: VectorPoint[], indexes: number[], tolerance: number): number[] {
+  if (indexes.length <= 2) return indexes;
+  const start = points[indexes[0]];
+  const end = points[indexes[indexes.length - 1]];
+  let maximumDistance = 0;
+  let splitPosition = 0;
+  for (let position = 1; position < indexes.length - 1; position += 1) {
+    const distance = pointToLineDistance(points[indexes[position]], start, end);
+    if (distance > maximumDistance) {
+      maximumDistance = distance;
+      splitPosition = position;
+    }
+  }
+  if (maximumDistance <= tolerance) return [indexes[0], indexes[indexes.length - 1]];
+  const left = simplifyPolylineIndexes(points, indexes.slice(0, splitPosition + 1), tolerance);
+  const right = simplifyPolylineIndexes(points, indexes.slice(splitPosition), tolerance);
+  return [...left.slice(0, -1), ...right];
+}
+
+function longStraightRuns(points: VectorPoint[], lineTolerance: number, samplingScale: number) {
+  if (points.length < 4) return [] as Array<{ start: number; end: number }>;
+  let opposite = 1;
+  let farthestDistance = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const distance = distanceBetween(points[0], points[index]);
+    if (distance > farthestDistance) {
+      farthestDistance = distance;
+      opposite = index;
+    }
+  }
+  const firstChain = Array.from({ length: opposite + 1 }, (_, index) => index);
+  const secondChain = [
+    ...Array.from({ length: points.length - opposite }, (_, index) => opposite + index),
+    0,
+  ];
+  const candidateIndexes = new Set([
+    ...simplifyPolylineIndexes(points, firstChain, lineTolerance * 2.75),
+    ...simplifyPolylineIndexes(points, secondChain, lineTolerance * 2.75),
+  ]);
+  const candidates = [...candidateIndexes].sort((first, second) => first - second);
+  const runs: Array<{ start: number; end: number }> = [];
+  const minimumRunLength = Math.max(18 * samplingScale, lineTolerance * 7);
+  const cornerProbe = Math.max(3 * samplingScale, lineTolerance * 3);
+  const endpointAngle = (index: number) => interiorAngle(
+    contourPointAtDistance(points, index, -1, cornerProbe),
+    points[index],
+    contourPointAtDistance(points, index, 1, cornerProbe),
+  );
+  for (let position = 0; position < candidates.length; position += 1) {
+    const start = candidates[position];
+    const end = candidates[(position + 1) % candidates.length];
+    const run = end > start
+      ? points.slice(start, end + 1)
+      : [...points.slice(start), ...points.slice(0, end + 1)];
+    const chord = distanceBetween(run[0], run[run.length - 1]);
+    if (run.length < 2 || chord < minimumRunLength) continue;
+    // A real straight logo or glyph edge normally meets another edge at a
+    // visible corner. Requiring both end turns prevents a smooth circle from
+    // being approximated as many locally straight chords.
+    if (endpointAngle(start) > 150 || endpointAngle(end) > 150) continue;
+    if (!shouldEmitStraightLine(run, lineTolerance, .02)) continue;
+    runs.push({ start, end });
+  }
+  return runs;
+}
+
 function evaluateCubic(curve: CubicCurve, parameter: number) {
   const inverse = 1 - parameter;
   const first = inverse * inverse * inverse;
@@ -1102,11 +1185,7 @@ function fitOpenCurve(
 ): FittedCommand[] {
   const end = points[points.length - 1];
   if (points.length <= 2) return [{ type: "L", end }];
-  const maximumLineError = points.slice(1, -1).reduce(
-    (maximum, point) => Math.max(maximum, pointToLineDistance(point, points[0], end)),
-    0,
-  );
-  if (maximumLineError <= lineTolerance) return [{ type: "L", end }];
+  if (shouldEmitStraightLine(points, lineTolerance)) return [{ type: "L", end }];
 
   let parameters = chordLengthParameters(points);
   let curve = generateBezier(points, parameters, leftTangent, rightTangent);
@@ -1147,8 +1226,9 @@ function contourCorners(
   samplingScale: number,
   detailFactor: number,
 ) {
-  // Raster stair steps often look like shallow corners. Keep authored sharp
-  // turns, but let wider turns remain part of one longer fitted curve.
+  // Raster stair steps often look like shallow corners. Keep only authored
+  // sharp turns here; the separate long-run detector below finds straight
+  // logo and type edges without over-segmenting organic curves.
   const cornerLimit = { light: 102, medium: 103, strong: 105 }[cleanup];
   const inspectionDistance = { light: 2.2, medium: 2.8, strong: 3.4 }[cleanup] * samplingScale * Math.sqrt(detailFactor);
   const candidates = points.map((point, index) => {
@@ -1219,16 +1299,35 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, sampl
   // Treating their raster quadrants as authored corners produces the subtle
   // angular eyes visible at high zoom.
   const roundedCompactDetail = minimumDimension <= 28 * scale && aspectRatio <= 1.8 && fillRatio >= .62 && fillRatio <= .9;
-  const corners = roundedCompactDetail ? [] : contourCorners(contour, activeCleanup, scale, detailFactor);
   const errorTolerance = { light: .66, medium: 1.2, strong: 1.58 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
   const lineTolerance = { light: .24, medium: .42, strong: .62 }[activeCleanup] * scale * detailFactor * (1 + simplification);
+  const straightRuns = roundedCompactDetail ? [] : longStraightRuns(contour, lineTolerance, scale);
+  const corners = roundedCompactDetail
+    ? []
+    : [...new Set([
+      ...contourCorners(contour, activeCleanup, scale, detailFactor),
+      ...straightRuns.flatMap(({ start, end }) => [start, end]),
+    ])].sort((first, second) => first - second);
   const rdpTolerance = errorTolerance * .27;
   const segments = closedContourSegments(contour, corners);
   const start = segments[0]?.[0];
   if (!start) return "";
   const commands = [`M ${roundCoordinate(start.x)} ${roundCoordinate(start.y)}`];
+  const contourIndex = new Map(contour.map((point, index) => [point, index]));
+  const forwardDistance = (from: number, to: number) => (to - from + contour.length) % contour.length;
 
   for (const rawSegment of segments) {
+    const rawStart = contourIndex.get(rawSegment[0]);
+    const rawEnd = contourIndex.get(rawSegment[rawSegment.length - 1]);
+    const belongsToStraightRun = rawStart !== undefined && rawEnd !== undefined && straightRuns.some((run) => {
+      const runLength = forwardDistance(run.start, run.end);
+      return forwardDistance(run.start, rawStart) + forwardDistance(rawStart, rawEnd) <= runLength;
+    });
+    if (belongsToStraightRun && rawSegment.length > 2 && distanceBetween(rawSegment[0], rawSegment[rawSegment.length - 1]) > .01 && shouldEmitStraightLine(rawSegment, lineTolerance, .02)) {
+      const end = rawSegment[rawSegment.length - 1];
+      commands.push(`L ${roundCoordinate(end.x)} ${roundCoordinate(end.y)}`);
+      continue;
+    }
     const segment = simplifyOpenPolyline(rawSegment, rdpTolerance);
     if (segment.length < 2) continue;
     const isClosedSegment = distanceBetween(segment[0], segment[segment.length - 1]) <= .01 && segment.length > 3;
@@ -1726,7 +1825,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v6" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v7" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(

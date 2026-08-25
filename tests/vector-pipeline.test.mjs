@@ -165,6 +165,27 @@ function makeSmallEyesArtwork() {
   return imageData;
 }
 
+function makeMixedLogoArtwork() {
+  const width = 200;
+  const height = 120;
+  const imageData = new TestImageData(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const leftEdge = 18 + Math.floor(y * .16);
+      const rightEdge = 78 + Math.floor(y * .16);
+      const slantedBlock = y >= 18 && y < 102 && x >= leftEdge && x < rightEdge;
+      const roundMark = Math.hypot(x - 148, y - 60) <= 34;
+      const navy = slantedBlock || roundMark;
+      imageData.data[offset] = navy ? 16 : 250;
+      imageData.data[offset + 1] = navy ? 42 : 250;
+      imageData.data[offset + 2] = navy ? 86 : 250;
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
 function commandStats(svg) {
   return {
     move: (svg.match(/\bM\s/g) ?? []).length,
@@ -178,10 +199,11 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v6"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v7"/);
   assert.match(result.svg, /data-color-underlap="true"/);
   assert.match(result.svg, /data-color-stacking="containment"/);
   assert.match(result.svg, /data-curve-continuity="adaptive"/);
+  assert.match(result.svg, /data-geometry-classifier="line-curve"/);
   assert.ok(stats.cubic / drawingCommands >= .3, JSON.stringify(stats));
   assert.ok(result.curveRatio >= 30, `curve ratio: ${result.curveRatio}`);
   assert.ok(stats.move < 40, `too many subpaths: ${stats.move}`);
@@ -231,6 +253,18 @@ test("midpoint simplification preserves small foreground eyes before and after b
   const withoutBackground = deleteColors(initial, [backgroundIndex], "medium");
   assert.equal(withoutBackground.anchorSimplification, 50, "palette edits must retain the same tracing quality");
   assert.match(withoutBackground.svg, /data-detail-preservation="foreground"/);
+});
+
+test("logo geometry emits straight strokes as lines and rounded marks as curves", () => {
+  const result = createVectorResult(sourceFor(makeMixedLogoArtwork()), 2, "medium", 50);
+  const foregroundIndex = result.palette.findIndex(({ backgroundCandidate }) => !backgroundCandidate);
+  const foregroundLayer = result.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${foregroundIndex}"[^>]*>[\\s\\S]*?<path[^>]* d="([^"]+)"`))?.[1] ?? "";
+  const lineCount = (foregroundLayer.match(/\bL\s/g) ?? []).length;
+  const curveCount = (foregroundLayer.match(/\bC\s/g) ?? []).length;
+
+  assert.match(result.svg, /data-geometry-classifier="line-curve"/);
+  assert.ok(lineCount >= 4, `the slanted logo block should retain four straight sides: ${lineCount} lines, ${curveCount} curves`);
+  assert.ok(curveCount >= 2, `the round logo mark should remain a fitted curve: ${lineCount} lines, ${curveCount} curves`);
 });
 
 test("contained foreground colors are stacked over a solid lower path", () => {
