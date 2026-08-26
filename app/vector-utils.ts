@@ -1484,7 +1484,7 @@ function keepTracedPath(
 
 function compoundPath(pathData: string[], color: string, _strokeWidth: number) {
   if (!pathData.length) return "";
-  return `<path fill="${color}" fill-rule="evenodd" clip-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
+  return `<path fill="${color}" fill-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
 }
 
 type TraceInternals = {

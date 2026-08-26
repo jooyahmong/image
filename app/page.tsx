@@ -63,14 +63,12 @@ const presets = {
   botanical: { label: "Botanical", colors: ["#1F3D34", "#477D62", "#8DB596", "#D8E2C6", "#F4E9D8"] },
   mono: { label: "Ink & paper", colors: ["#202725", "#59635F", "#A8AFAB", "#E1E2DC", "#FAF8F0"] },
 };
-const DEFAULT_CLEANUP: CleanupLevel = "medium";
+const FIXED_CLEANUP: CleanupLevel = "medium";
 const FIXED_ANCHOR_SIMPLIFICATION = 50;
 
 const koreanText: Record<string, string> = {
   "Vector settings": "벡터 설정", "Number of colors": "색상 수", "Visible colors, excluding transparency": "투명도를 제외한 표시 색상",
   "Reduce colors & vectorize": "색상 줄이기 및 벡터화", "Building your palette…": "팔레트를 만드는 중…",
-  "Edge seam fill": "가장자리 이음매 채우기", "Hides thin gaps between colors, but adds a hidden color layer some apps may still detect.": "색상 사이의 얇은 틈을 메워주지만, 일부 프로그램이 감지할 수 있는 숨겨진 색상 레이어가 추가됩니다.",
-  "On": "켜짐", "Off": "꺼짐",
   "Transparent outer edges are trimmed automatically.": "투명한 바깥 여백은 자동으로 잘립니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
   "Edit palette": "팔레트 편집", "Apply": "적용", "Select a color to highlight its exact area.": "색상을 선택해 정확한 영역을 강조 표시하세요.",
   "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
@@ -133,7 +131,6 @@ export default function Home() {
   const [result, setResult] = useState<VectorResult | null>(null);
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
-  const [cleanup, setCleanup] = useState<CleanupLevel>(DEFAULT_CLEANUP);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -184,6 +181,7 @@ export default function Home() {
     return () => observer.disconnect();
   }, [language]);
   const colorSliderProgress = ((colorCount - 2) / 18) * 100;
+  const cleanup = FIXED_CLEANUP;
   const panEnabled = zoom > 100 && (panMode || !brushMode);
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
@@ -242,7 +240,7 @@ export default function Home() {
     try {
       const fullCrop = sourceCrop.x === 0 && sourceCrop.y === 0 && sourceCrop.width === source.width && sourceCrop.height === source.height;
       const conversionSource = fullCrop ? source : cropRasterSource(source, sourceCrop);
-      const converted = createVectorResult(conversionSource, colorCount, cleanup, FIXED_ANCHOR_SIMPLIFICATION);
+      const converted = createVectorResult(conversionSource, colorCount, FIXED_CLEANUP, FIXED_ANCHOR_SIMPLIFICATION);
       setSource(conversionSource);
       setSourceCrop({ x: 0, y: 0, width: conversionSource.width, height: conversionSource.height });
       setResult(converted);
@@ -263,7 +261,7 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
-  }, [cleanup, colorCount, pushHistory, source, sourceCrop]);
+  }, [colorCount, pushHistory, source, sourceCrop]);
 
   const startSourceCropDrag = useCallback((event: ReactPointerEvent<HTMLSpanElement>) => {
     if (!source || !sourceCropStage.current) return;
@@ -815,7 +813,6 @@ export default function Home() {
             <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <div className="setting-row"><div><label htmlFor="seam-fill-toggle">Edge seam fill</label><small>Hides thin gaps between colors, but adds a hidden color layer some apps may still detect.</small></div><button id="seam-fill-toggle" className={cleanup !== "none" ? "active" : ""} type="button" onClick={() => setCleanup((current) => current === "none" ? DEFAULT_CLEANUP : "none")}>{cleanup !== "none" ? "On" : "Off"}</button></div>
             <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
             <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
           </aside>
