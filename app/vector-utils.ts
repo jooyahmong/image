@@ -1825,7 +1825,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     const path = compoundPath(paths, color.hex, traceSettings.stroke);
     return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v7" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img" aria-label="Layered vector artwork"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v7" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
