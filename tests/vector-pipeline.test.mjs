@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 
 class TestImageData {
   constructor(first, second, third) {
@@ -186,6 +188,118 @@ function makeMixedLogoArtwork() {
   return imageData;
 }
 
+function makeLayeredCharacterArtwork() {
+  const width = 320;
+  const height = 320;
+  const imageData = new TestImageData(width, height);
+  const ellipse = (x, y, centerX, centerY, radiusX, radiusY) => (
+    ((x - centerX) / radiusX) ** 2 + ((y - centerY) / radiusY) ** 2 <= 1
+  );
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      let color = [250, 250, 250];
+      const outerBody = ellipse(x, y, 158, 171, 108, 135);
+      const innerBody = ellipse(x, y, 164, 174, 89, 116);
+      const overalls = innerBody && y >= 211;
+      const leftStrap = innerBody && x >= 112 && x <= 129 && y >= 169 && y <= 236;
+      const rightStrap = innerBody && x >= 196 && x <= 213 && y >= 169 && y <= 236;
+      const ear = ellipse(x, y, 119, 104, 26, 31);
+      const beak = ellipse(x, y, 247, 146, 61, 27);
+      const leftEye = ellipse(x, y, 164, 137, 8, 10);
+      const rightEye = ellipse(x, y, 197, 134, 8, 10);
+      const leftButton = ellipse(x, y, 124, 216, 7, 7);
+      const rightButton = ellipse(x, y, 204, 216, 7, 7);
+      const mouthRadius = Math.hypot(x - 181, y - 171);
+      const mouth = mouthRadius >= 27 && mouthRadius <= 34 && y >= 173 && x >= 178;
+
+      if (outerBody) color = [30, 25, 24];
+      if (innerBody) color = [201, 132, 54];
+      if (ear) color = [103, 69, 43];
+      if (overalls || leftStrap || rightStrap) color = [31, 86, 139];
+      if (leftButton || rightButton) color = [238, 184, 48];
+      if (leftEye || rightEye || mouth) color = [30, 25, 24];
+      if (beak) color = [103, 69, 43];
+
+      imageData.data[offset] = color[0];
+      imageData.data[offset + 1] = color[1];
+      imageData.data[offset + 2] = color[2];
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
+function structureMetrics(result) {
+  const paths = [...result.svg.matchAll(/<path\b([^>]*)\bd="([^"]+)"[^>]*>/g)];
+  const groups = [...result.svg.matchAll(/<g\b[^>]*data-stack-depth="(\d+)"[^>]*>/g)];
+  return {
+    fileSize: result.fileSize,
+    colors: result.palette.length,
+    paths: paths.length,
+    subpaths: (result.svg.match(/\bM\s/g) ?? []).length,
+    estimatedAnchors: result.nodeCount,
+    bezierCommands: result.cubicCount,
+    unwantedHoles: paths.reduce((total, path) => total + Math.max(0, (path[2].match(/\bM\s/g) ?? []).length - 1), 0),
+    backgroundRectangle: /\bM\s+0(?:\.0+)?\s+0(?:\.0+)?[^Z]*\bZ/.test(result.svg),
+    layerStructure: `${groups.length} layers / max depth ${Math.max(0, ...groups.map((group) => Number(group[1])))}`,
+    embeddedRaster: /(?:<image\b|data:image|base64)/i.test(result.svg),
+    strokePaths: paths.filter((path) => /\bstroke=/.test(path[1])).length,
+    closedFillPaths: paths.filter((path) => /\bfill=/.test(path[1]) && /Z\s*$/.test(path[2])).length,
+  };
+}
+
+function writePocArtifact(phase, result, metrics) {
+  if (!phase || process.env.POC_PHASE !== phase) return;
+  const artifactDirectory = new URL("./artifacts/", import.meta.url);
+  mkdirSync(artifactDirectory, { recursive: true });
+  writeFileSync(new URL(`region-fill-${phase}.svg`, artifactDirectory), result.svg);
+  writeFileSync(new URL(`region-fill-${phase}.json`, artifactDirectory), `${JSON.stringify(metrics, null, 2)}\n`);
+}
+
+function pngCrc(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBytes.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(pngCrc(Buffer.concat([typeBytes, data])), 8 + data.length);
+  return chunk;
+}
+
+function writePocSourcePng(imageData) {
+  if (!process.env.POC_PHASE) return;
+  const artifactDirectory = new URL("./artifacts/", import.meta.url);
+  mkdirSync(artifactDirectory, { recursive: true });
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(imageData.width, 0);
+  header.writeUInt32BE(imageData.height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const scanlines = Buffer.alloc((imageData.width * 4 + 1) * imageData.height);
+  for (let y = 0; y < imageData.height; y += 1) {
+    const target = y * (imageData.width * 4 + 1);
+    scanlines[target] = 0;
+    Buffer.from(imageData.data.buffer, imageData.data.byteOffset + y * imageData.width * 4, imageData.width * 4).copy(scanlines, target + 1);
+  }
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(scanlines)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+  writeFileSync(new URL("region-fill-source.png", artifactDirectory), png);
+}
+
 function commandStats(svg) {
   return {
     move: (svg.match(/\bM\s/g) ?? []).length,
@@ -199,7 +313,8 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-curvefit-v7"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-regionfill-v8"/);
+  assert.match(result.svg, /data-rendering-model="region-layered-fill"/);
   assert.match(result.svg, /data-color-underlap="true"/);
   assert.match(result.svg, /data-color-stacking="containment"/);
   assert.match(result.svg, /data-curve-continuity="adaptive"/);
@@ -242,13 +357,15 @@ test("midpoint simplification preserves small foreground eyes before and after b
   const initial = createVectorResult(sourceFor(makeSmallEyesArtwork()), 3, "medium", 50);
   const blackIndex = initial.palette.findIndex(({ hex }) => hex === "#141414");
   const backgroundIndex = initial.palette.findIndex(({ backgroundCandidate }) => backgroundCandidate);
-  const blackLayer = initial.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${blackIndex}"[^>]*data-stack-depth="[1-9]"[^>]*>[\\s\\S]*?<path[^>]* d="([^"]+)"`));
+  const blackLayer = initial.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${blackIndex}"[^>]*data-stack-depth="[1-9]"[^>]*>([\\s\\S]*?)<\\/g>`));
 
   assert.ok(blackIndex >= 0 && backgroundIndex >= 0);
   assert.equal(initial.anchorSimplification, 50);
   assert.match(initial.svg, /data-detail-preservation="foreground"/);
   assert.ok((blackLayer?.[1].match(/M\s/g) ?? []).length >= 2, "both small eyes must remain visible");
   assert.doesNotMatch(blackLayer?.[1] ?? "", /\bL\s/, "compact round eyes should use fitted curves instead of angular line segments");
+  const eyePaths = [...(blackLayer?.[1] ?? "").matchAll(/<path\b[^>]*\bd="([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(eyePaths.filter((path) => (path.match(/\bC\s/g) ?? []).length === 4).length >= 2, "small round eyes should use four continuous cubic arcs");
 
   const withoutBackground = deleteColors(initial, [backgroundIndex], "medium");
   assert.equal(withoutBackground.anchorSimplification, 50, "palette edits must retain the same tracing quality");
@@ -258,13 +375,33 @@ test("midpoint simplification preserves small foreground eyes before and after b
 test("logo geometry emits straight strokes as lines and rounded marks as curves", () => {
   const result = createVectorResult(sourceFor(makeMixedLogoArtwork()), 2, "medium", 50);
   const foregroundIndex = result.palette.findIndex(({ backgroundCandidate }) => !backgroundCandidate);
-  const foregroundLayer = result.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${foregroundIndex}"[^>]*>[\\s\\S]*?<path[^>]* d="([^"]+)"`))?.[1] ?? "";
+  const foregroundLayer = result.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${foregroundIndex}"[^>]*>([\\s\\S]*?)<\\/g>`))?.[1] ?? "";
   const lineCount = (foregroundLayer.match(/\bL\s/g) ?? []).length;
   const curveCount = (foregroundLayer.match(/\bC\s/g) ?? []).length;
 
   assert.match(result.svg, /data-geometry-classifier="line-curve"/);
   assert.ok(lineCount >= 4, `the slanted logo block should retain four straight sides: ${lineCount} lines, ${curveCount} curves`);
   assert.ok(curveCount >= 2, `the round logo mark should remain a fitted curve: ${lineCount} lines, ${curveCount} curves`);
+});
+
+test("layered character stays a pure closed-fill vector after background deletion", () => {
+  const artwork = makeLayeredCharacterArtwork();
+  writePocSourcePng(artwork);
+  const initial = createVectorResult(sourceFor(artwork), 6, "medium", 50);
+  const backgroundIndex = initial.palette.findIndex(({ backgroundCandidate }) => backgroundCandidate);
+  assert.ok(backgroundIndex >= 0, "the white canvas must be recognized as removable background");
+  const result = deleteColors(initial, [backgroundIndex], "medium");
+  const metrics = structureMetrics(result);
+  writePocArtifact(process.env.POC_PHASE, result, metrics);
+
+  assert.equal(metrics.embeddedRaster, false);
+  assert.equal(metrics.strokePaths, 0);
+  assert.equal(metrics.backgroundRectangle, false);
+  assert.equal(metrics.closedFillPaths, metrics.paths);
+  assert.equal(metrics.unwantedHoles, 0, "nested colors should be stacked objects instead of punched holes");
+  assert.match(result.svg, /<path id="vector-object-\d+-\d+" class="vector-object"/);
+  assert.equal((result.svg.match(/<path\b/g) ?? []).length, (result.svg.match(/id="vector-object-/g) ?? []).length);
+  assert.ok(metrics.paths >= 10, `major character regions should remain separately selectable: ${metrics.paths}`);
 });
 
 test("contained foreground colors are stacked over a solid lower path", () => {

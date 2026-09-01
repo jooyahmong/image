@@ -919,6 +919,43 @@ function refineSubpixelContour(
   return refined;
 }
 
+function compactEllipsePath(
+  points: VectorPoint[],
+  minimumX: number,
+  minimumY: number,
+  maximumX: number,
+  maximumY: number,
+) {
+  const radiusX = (maximumX - minimumX) / 2;
+  const radiusY = (maximumY - minimumY) / 2;
+  if (radiusX <= 1e-8 || radiusY <= 1e-8) return "";
+  const centerX = minimumX + radiusX;
+  const centerY = minimumY + radiusY;
+  const radialErrors = points.map((point) => Math.abs(Math.hypot(
+    (point.x - centerX) / radiusX,
+    (point.y - centerY) / radiusY,
+  ) - 1));
+  const averageError = radialErrors.reduce((sum, error) => sum + error, 0) / Math.max(1, radialErrors.length);
+  const maximumError = Math.max(...radialErrors);
+  const fillRatio = polygonArea(points) / Math.max(1e-8, radiusX * radiusY * 4);
+  // Tiny eyes, dots, and round buttons are badly served by keeping every
+  // raster quadrant as a separate fitted segment. Only normalize contours
+  // that already agree closely with an ellipse; rounded squares and authored
+  // blobs retain their original fitted geometry.
+  if (Math.abs(fillRatio - Math.PI / 4) > .16 || averageError > .18 || maximumError > .42) return "";
+  const kappa = .5522847498307936;
+  const horizontalHandle = radiusX * kappa;
+  const verticalHandle = radiusY * kappa;
+  return [
+    `M ${roundCoordinate(centerX + radiusX)} ${roundCoordinate(centerY)}`,
+    `C ${roundCoordinate(centerX + radiusX)} ${roundCoordinate(centerY + verticalHandle)} ${roundCoordinate(centerX + horizontalHandle)} ${roundCoordinate(centerY + radiusY)} ${roundCoordinate(centerX)} ${roundCoordinate(centerY + radiusY)}`,
+    `C ${roundCoordinate(centerX - horizontalHandle)} ${roundCoordinate(centerY + radiusY)} ${roundCoordinate(centerX - radiusX)} ${roundCoordinate(centerY + verticalHandle)} ${roundCoordinate(centerX - radiusX)} ${roundCoordinate(centerY)}`,
+    `C ${roundCoordinate(centerX - radiusX)} ${roundCoordinate(centerY - verticalHandle)} ${roundCoordinate(centerX - horizontalHandle)} ${roundCoordinate(centerY - radiusY)} ${roundCoordinate(centerX)} ${roundCoordinate(centerY - radiusY)}`,
+    `C ${roundCoordinate(centerX + horizontalHandle)} ${roundCoordinate(centerY - radiusY)} ${roundCoordinate(centerX + radiusX)} ${roundCoordinate(centerY - verticalHandle)} ${roundCoordinate(centerX + radiusX)} ${roundCoordinate(centerY)}`,
+    "Z",
+  ].join(" ");
+}
+
 function simplifyOpenPolyline(points: VectorPoint[], tolerance: number): VectorPoint[] {
   if (points.length <= 2) return points;
   let maximumDistance = 0;
@@ -1299,6 +1336,10 @@ function smoothClosedContour(points: VectorPoint[], cleanup: CleanupLevel, sampl
   // Treating their raster quadrants as authored corners produces the subtle
   // angular eyes visible at high zoom.
   const roundedCompactDetail = minimumDimension <= 28 * scale && aspectRatio <= 1.8 && fillRatio >= .62 && fillRatio <= .9;
+  if (roundedCompactDetail) {
+    const ellipse = compactEllipsePath(contour, minimumX, minimumY, maximumX, maximumY);
+    if (ellipse) return ellipse;
+  }
   const errorTolerance = { light: .66, medium: 1.2, strong: 1.58 }[activeCleanup] * scale * detailFactor * (1 + simplification * 1.45);
   const lineTolerance = { light: .24, medium: .42, strong: .62 }[activeCleanup] * scale * detailFactor * (1 + simplification);
   const straightRuns = roundedCompactDetail ? [] : longStraightRuns(contour, lineTolerance, scale);
@@ -1482,9 +1523,21 @@ function keepTracedPath(
   return area >= minimumArea && (preserveForeground || nodeCount > 8 || area >= minimumArea * 2);
 }
 
-function compoundPath(pathData: string[], color: string, _strokeWidth: number) {
-  if (!pathData.length) return "";
-  return `<path fill="${color}" fill-rule="evenodd" shape-rendering="geometricPrecision" d="${pathData.join(" ")}"/>`;
+function filledObjectPath(
+  pathData: string,
+  color: string,
+  planIndex: number,
+  objectIndex: number,
+  colorIndex: number,
+  depth: number,
+) {
+  if (!pathData) return "";
+  const subpathCount = (pathData.match(/\bM\s/g) ?? []).length;
+  // Each traced outer region remains its own Illustrator-selectable object.
+  // evenodd is only needed when this one region contains a genuine
+  // transparent hole; unrelated same-color regions are never compounded.
+  const fillRule = subpathCount > 1 ? ' fill-rule="evenodd"' : "";
+  return `<path id="vector-object-${planIndex + 1}-${objectIndex + 1}" class="vector-object" data-object-index="${objectIndex}" data-color-index="${colorIndex}" data-stack-depth="${depth}" fill="${color}"${fillRule} shape-rendering="geometricPrecision" d="${pathData}"/>`;
 }
 
 type TraceInternals = {
@@ -1819,13 +1872,19 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     if (!paths.length) return "";
     const plan = tracedPlans[planIndex];
     const color = palette[plan.colorIndex];
-    // One compound path per color and containment depth keeps related islands
-    // grouped while allowing the same swatch to appear both behind and above
-    // another color when the artwork requires that stacking order.
-    const path = compoundPath(paths, color.hex, traceSettings.stroke);
-    return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${path}</g>`;
+    // The group preserves palette and z-order semantics, while every major
+    // region inside it remains an independent closed fill object.
+    const objects = paths.map((pathData, objectIndex) => filledObjectPath(
+      pathData,
+      color.hex,
+      planIndex,
+      objectIndex,
+      plan.colorIndex,
+      plan.depth,
+    )).join("");
+    return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${objects}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-curvefit-v7" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-regionfill-v8" data-rendering-model="region-layered-fill" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
