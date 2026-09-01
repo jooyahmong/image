@@ -67,9 +67,9 @@ const FIXED_CLEANUP: CleanupLevel = "medium";
 const FIXED_ANCHOR_SIMPLIFICATION = 50;
 
 const koreanText: Record<string, string> = {
-  "Vector settings": "벡터 설정", "Number of colors": "색상 수", "Visible colors, excluding transparency": "투명도를 제외한 표시 색상",
-  "Reduce colors & vectorize": "색상 줄이기 및 벡터화", "Building your palette…": "팔레트를 만드는 중…",
-  "Transparent outer edges are trimmed automatically.": "투명한 바깥 여백은 자동으로 잘립니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
+  "High-quality solid SVG": "고품질 단색 SVG", "Number of colors": "색상 수", "Visible colors, excluding transparency": "투명도를 제외한 표시 색상",
+  "Create high-quality SVG": "고품질 SVG 만들기", "Building high-quality paths…": "고품질 패스를 만드는 중…",
+  "Shadows and highlights are folded into solid base colors. No gradients are created.": "그림자와 하이라이트는 원래의 단색 면으로 통합되며 그라데이션은 만들지 않습니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
   "Edit palette": "팔레트 편집", "Apply": "적용", "Select a color to highlight its exact area.": "색상을 선택해 정확한 영역을 강조 표시하세요.",
   "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
   "Brush parts of the selected color that must not be deleted.": "선택한 색상 중 삭제하면 안 되는 부분을 브러시로 지정합니다.", "Use brush": "브러시 사용", "Brush on": "브러시 켜짐",
@@ -810,11 +810,11 @@ export default function Home() {
           </div>
 
           <aside className="settings-card">
-            <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>Vector settings</h2></div></div>
+            <div className="card-heading compact"><div><span className="step-label">STEP 2</span><h2>High-quality solid SVG</h2></div></div>
             <div className="setting-row"><div><label htmlFor="color-count">Number of colors</label><small>Visible colors, excluding transparency</small></div><span className="value-box">{colorCount}</span></div>
             <input id="color-count" className="range-control" type="range" min="2" max="20" value={colorCount} style={{ background: `linear-gradient(90deg, var(--green) 0 ${colorSliderProgress}%, #e9ece8 ${colorSliderProgress}% 100%)` }} onChange={(event) => setColorCount(Number(event.target.value))}/>
-            <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building your palette…" : "Reduce colors & vectorize"}</button>
-            <p className="button-hint">Transparent outer edges are trimmed automatically.</p>
+            <button className="primary-button" type="button" disabled={!source || busy} onClick={() => void runConversion()}><SwatchBook size={17}/>{busy ? "Building high-quality paths…" : "Create high-quality SVG"}</button>
+            <p className="button-hint">Shadows and highlights are folded into solid base colors. No gradients are created.</p>
           </aside>
         </section>
       ) : (

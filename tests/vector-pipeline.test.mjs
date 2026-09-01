@@ -18,8 +18,21 @@ class TestImageData {
 }
 
 globalThis.ImageData = TestImageData;
+let downloadedFilename = "";
 globalThis.document = {
+  body: { appendChild() {} },
   createElement(name) {
+    if (name === "a") {
+      return {
+        href: "",
+        download: "",
+        target: "",
+        rel: "",
+        style: {},
+        click() { downloadedFilename = this.download; },
+        remove() {},
+      };
+    }
     assert.equal(name, "canvas");
     const canvas = {
       width: 0,
@@ -53,7 +66,7 @@ globalThis.document = {
 
 const vectorUtilsUrl = new URL("../app/vector-utils.ts", import.meta.url);
 vectorUtilsUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-const { createVectorResult, deleteColors, encodeIco } = await import(vectorUtilsUrl.href);
+const { createVectorResult, deleteColors, downloadText, encodeIco } = await import(vectorUtilsUrl.href);
 
 function makeArtwork(width, height) {
   const imageData = new TestImageData(width, height);
@@ -230,6 +243,41 @@ function makeLayeredCharacterArtwork() {
   return imageData;
 }
 
+function makeSolidColorIllustrationArtwork() {
+  const width = 320;
+  const height = 320;
+  const imageData = new TestImageData(width, height);
+  const ellipse = (x, y, centerX, centerY, radiusX, radiusY) => (
+    ((x - centerX) / radiusX) ** 2 + ((y - centerY) / radiusY) ** 2 <= 1
+  );
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const body = ellipse(x, y, 151, 178, 105, 128);
+      const bodyShadow = body && !ellipse(x, y, 151, 178, 90, 111);
+      const face = ellipse(x, y, 165, 126, 54, 47);
+      const bodyHighlight = ellipse(x, y, 131, 225, 12, 7);
+      const scarf = body && y >= 167 && y <= 192;
+      const hat = ellipse(x, y, 218, 86, 43, 28);
+      const leftEye = ellipse(x, y, 148, 120, 6, 8);
+      const rightEye = ellipse(x, y, 181, 120, 6, 8);
+      let color = [254, 254, 254];
+      if (body) color = [245, 205, 140];
+      if (bodyShadow) color = [222, 174, 105];
+      if (face) color = [248, 190, 118];
+      if (bodyHighlight) color = [254, 254, 254];
+      if (scarf) color = [221, 12, 19];
+      if (hat) color = [101, 182, 233];
+      if (leftEye || rightEye) color = [19, 18, 18];
+      imageData.data[offset] = color[0];
+      imageData.data[offset + 1] = color[1];
+      imageData.data[offset + 2] = color[2];
+      imageData.data[offset + 3] = 255;
+    }
+  }
+  return imageData;
+}
+
 function structureMetrics(result) {
   const paths = [...result.svg.matchAll(/<path\b([^>]*)\bd="([^"]+)"[^>]*>/g)];
   const groups = [...result.svg.matchAll(/<g\b[^>]*data-stack-depth="(\d+)"[^>]*>/g)];
@@ -313,8 +361,10 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   const result = createVectorResult(sourceFor(makeArtwork(800, 800)), 8, "medium");
   const stats = commandStats(result.svg);
   const drawingCommands = stats.line + stats.quadratic + stats.cubic;
-  assert.match(result.svg, /data-vector-engine="imagetracer-regionfill-v8"/);
+  assert.match(result.svg, /data-vector-engine="imagetracer-regionfill-v9"/);
   assert.match(result.svg, /data-rendering-model="region-layered-fill"/);
+  assert.match(result.svg, /data-solid-color-normalization="adjacent-shades"/);
+  assert.match(result.svg, /data-gradients="none"/);
   assert.match(result.svg, /data-color-underlap="true"/);
   assert.match(result.svg, /data-color-stacking="containment"/);
   assert.match(result.svg, /data-curve-continuity="adaptive"/);
@@ -330,7 +380,26 @@ test("balanced tracing removes fringe colors and emits fitted cubic curves", () 
   assert.doesNotMatch(result.svg, /(?:<image\b|data:image|base64|NaN|Infinity)/i);
 });
 
-test("small isolated artwork is traced on an 800px working grid", () => {
+test("solid-color normalization folds a shadow band into its base while preserving compact details", () => {
+  const result = createVectorResult(sourceFor(makeSolidColorIllustrationArtwork()), 7, "medium", 50);
+  const colors = result.palette.map(({ hex }) => hex);
+  const blackIndex = result.palette.findIndex(({ hex }) => hex === "#131212");
+  const blackLayer = result.svg.match(new RegExp(`<g id="vector-layer-\\d+"[^>]*data-color-index="${blackIndex}"[^>]*>([\\s\\S]*?)<\\/g>`))?.[1] ?? "";
+
+  assert.ok(colors.includes("#F5CD8C"), colors.join(", "));
+  assert.ok(colors.includes("#F8BE76"), "the compact face color must remain a separate editable object");
+  assert.ok(!colors.includes("#DEAE69"), "the narrow shadow band must be folded into the body base color");
+  assert.ok((blackLayer.match(/<path\b/g) ?? []).length >= 2, "both high-contrast eyes must survive solid-color normalization");
+  const backgroundIndex = result.palette.findIndex(({ backgroundCandidate }) => backgroundCandidate);
+  const highlightPixel = 225 * 320 + 131;
+  assert.notEqual(result.pixelMap[highlightPixel], backgroundIndex, "an enclosed light-on-light highlight must be assigned to its surrounding base");
+  const withoutBackground = deleteColors(result, [backgroundIndex], "medium");
+  assert.notEqual(withoutBackground.pixelMap[highlightPixel], 255, "deleting the exterior background must not punch out the normalized highlight");
+  assert.doesNotMatch(result.svg, /<(?:linearGradient|radialGradient|stop)\b/i);
+  assert.doesNotMatch(result.svg, /(?:<image\b|data:image|base64)/i);
+});
+
+test("small isolated artwork keeps the efficient 800px working grid", () => {
   const result = createVectorResult(sourceFor(makeArtwork(317, 324)), 8, "medium");
   const stats = commandStats(result.svg);
   assert.match(result.svg, /viewBox="0 0 317 324"/);
@@ -453,4 +522,13 @@ test("favicon encoder creates a valid multi-size ICO directory", () => {
     expectedOffset += image.bytes.byteLength;
   });
   assert.equal(ico.byteLength, expectedOffset);
+});
+
+test("SVG download fallback creates a named browser download", async () => {
+  downloadedFilename = "";
+  globalThis.window = { setTimeout(callback) { callback(); return 0; } };
+  const status = await downloadText('<svg xmlns="http://www.w3.org/2000/svg"/>', "solid-artwork.svg", "image/svg+xml");
+  assert.equal(status, "downloaded");
+  assert.equal(downloadedFilename, "solid-artwork.svg");
+  delete globalThis.window;
 });

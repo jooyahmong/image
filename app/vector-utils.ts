@@ -227,6 +227,46 @@ function isProtectedColorContrast(first?: { r: number; g: number; b: number }, s
   return colorDistance(first.r, first.g, first.b, second) >= protectedDistance * protectedDistance;
 }
 
+type ColorProfile = { hue: number; saturation: number; lightness: number };
+
+function colorProfile(color?: { r: number; g: number; b: number }): ColorProfile | null {
+  if (!color) return null;
+  const red = color.r / 255;
+  const green = color.g / 255;
+  const blue = color.b / 255;
+  const maximum = Math.max(red, green, blue);
+  const minimum = Math.min(red, green, blue);
+  const delta = maximum - minimum;
+  const lightness = (maximum + minimum) / 2;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+  let hue = 0;
+  if (delta) {
+    if (maximum === red) hue = 60 * (((green - blue) / delta) % 6);
+    else if (maximum === green) hue = 60 * ((blue - red) / delta + 2);
+    else hue = 60 * ((red - green) / delta + 4);
+  }
+  if (hue < 0) hue += 360;
+  return { hue, saturation, lightness };
+}
+
+function belongsToSameSolidColorFamily(first?: { r: number; g: number; b: number }, second?: { r: number; g: number; b: number }) {
+  const firstProfile = colorProfile(first);
+  const secondProfile = colorProfile(second);
+  if (!firstProfile || !secondProfile) return false;
+  // Dark ink, eyes, buttons, and outlines are semantic foreground objects, not
+  // shadows to be folded into a neighboring body color.
+  if (Math.min(firstProfile.lightness, secondProfile.lightness) < .28) return false;
+  const lightnessDifference = Math.abs(firstProfile.lightness - secondProfile.lightness);
+  const saturationDifference = Math.abs(firstProfile.saturation - secondProfile.saturation);
+  const bothNeutral = firstProfile.saturation <= .16 && secondProfile.saturation <= .16;
+  if (bothNeutral) return lightnessDifference <= .2;
+  const hueDifference = Math.min(
+    Math.abs(firstProfile.hue - secondProfile.hue),
+    360 - Math.abs(firstProfile.hue - secondProfile.hue),
+  );
+  return hueDifference <= 16 && saturationDifference <= .28 && lightnessDifference <= .2;
+}
+
 export function renderPalette(
   width: number,
   height: number,
@@ -717,6 +757,80 @@ function mergeFringeOnlyColors(
   return output;
 }
 
+function flattenAdjacentShadeComponents(
+  width: number,
+  height: number,
+  source: Uint8Array,
+  palette: PaletteColor[],
+  cleanup: CleanupLevel,
+) {
+  if (cleanup === "none" || cleanup === "light") return source.slice();
+  const output = source.slice();
+  const canvasArea = width * height;
+
+  // Gradients and soft shadows become a sequence of narrow, adjacent color
+  // bands after quantization. Fold only those band-like components into their
+  // larger neighboring base color. Coherent compact shapes remain separate so
+  // similar-hued materials (for example cream wool and a peach face) do not
+  // collapse into one object.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const backgroundIndex = findLikelyBackgroundIndex(width, height, output);
+    const globalCounts = new Uint32Array(256);
+    for (const color of output) globalCounts[color] += 1;
+    let changed = false;
+
+    for (const component of collectIndexedComponents(width, height, output)) {
+      const sourceIndex = component.colorIndex;
+      if (sourceIndex === TRANSPARENT_INDEX) continue;
+      // A likely background color can also occur as an isolated highlight
+      // inside a pale object. Keep the exterior component removable, but fold
+      // enclosed light-on-light highlights into the surrounding base so
+      // deleting the background cannot punch holes through the illustration.
+      const interiorBackgroundHighlight = sourceIndex === backgroundIndex && !component.touchesTransparency;
+      if (sourceIndex === backgroundIndex && !interiorBackgroundHighlight) continue;
+      const bandLike = interiorBackgroundHighlight || component.compactness < .5 || component.aspectRatio > 3.2 || component.area < canvasArea * .00045;
+      if (!bandLike) continue;
+
+      const visibleBoundaries = [...component.boundaryCounts.entries()].filter(([candidate]) => (
+        candidate !== TRANSPARENT_INDEX && candidate !== backgroundIndex && candidate !== sourceIndex
+      ));
+      const visibleBoundaryLength = visibleBoundaries.reduce((total, [, length]) => total + length, 0);
+      if (!visibleBoundaryLength) continue;
+
+      let replacement = TRANSPARENT_INDEX;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (const [candidate, boundaryLength] of visibleBoundaries) {
+        if (!interiorBackgroundHighlight && globalCounts[candidate] <= globalCounts[sourceIndex]) continue;
+        if (globalCounts[candidate] < component.area * 1.4) continue;
+        if (boundaryLength / visibleBoundaryLength < .38) continue;
+        const distance = Math.sqrt(colorDistance(
+          palette[sourceIndex]?.r ?? 0,
+          palette[sourceIndex]?.g ?? 0,
+          palette[sourceIndex]?.b ?? 0,
+          palette[candidate] ?? { r: 0, g: 0, b: 0 },
+        ));
+        const candidateProfile = colorProfile(palette[candidate]);
+        const sameSolidFamily = interiorBackgroundHighlight
+          ? !!candidateProfile && candidateProfile.lightness >= .62 && distance <= 230
+          : belongsToSameSolidColorFamily(palette[sourceIndex], palette[candidate]);
+        if (!sameSolidFamily) continue;
+        const score = boundaryLength * (1 + Math.log2(2 + globalCounts[candidate])) - distance * 2;
+        if (score > bestScore) {
+          replacement = candidate;
+          bestScore = score;
+        }
+      }
+      if (replacement === TRANSPARENT_INDEX) continue;
+      for (const pixel of component.pixels) output[pixel] = replacement;
+      globalCounts[sourceIndex] = Math.max(0, globalCounts[sourceIndex] - component.area);
+      globalCounts[replacement] += component.area;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return output;
+}
+
 function cleanIndexedMap(
   width: number,
   height: number,
@@ -735,9 +849,10 @@ function cleanIndexedMap(
   // the vector tracer.
   const withoutFinalFringe = removeTinyComponents(width, height, withoutIslands, cleanup, palette);
   const withoutFringeColors = mergeFringeOnlyColors(width, height, withoutFinalFringe, palette, cleanup);
+  const solidColorMap = flattenAdjacentShadeComponents(width, height, withoutFringeColors, palette, cleanup);
   return cleanup === "strong"
-    ? enforceComponentBudget(width, height, withoutFringeColors, palette, cleanup)
-    : withoutFringeColors;
+    ? enforceComponentBudget(width, height, solidColorMap, palette, cleanup)
+    : solidColorMap;
 }
 
 function normalizePalette(
@@ -1808,7 +1923,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
   const traceSettings = {
     none: { pathOmit: 1, lineTolerance: .45, curveTolerance: .8, blur: 0, blurDelta: 22, stroke: .2, minimumDimension: 800, maximumDimension: 1600 },
     light: { pathOmit: 8, lineTolerance: .3, curveTolerance: 1.35, blur: 0, blurDelta: 28, stroke: .25, minimumDimension: 800, maximumDimension: 1400 },
-    medium: { pathOmit: 12, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, minimumDimension: 800, maximumDimension: 1200 },
+    medium: { pathOmit: 12, lineTolerance: .2, curveTolerance: 1.9, blur: 0, blurDelta: 34, stroke: .3, minimumDimension: 800, maximumDimension: 1600 },
     strong: { pathOmit: 20, lineTolerance: .12, curveTolerance: 2.7, blur: 0, blurDelta: 38, stroke: .35, minimumDimension: 800, maximumDimension: 1000 },
   }[cleanup];
   const simplification = Math.max(0, Math.min(100, anchorSimplification)) / 100;
@@ -1884,7 +1999,7 @@ function traceImage(imageData: ImageData, palette: PaletteColor[], cleanup: Clea
     )).join("");
     return `<g id="vector-layer-${planIndex + 1}" class="vector-layer" data-color-index="${plan.colorIndex}" data-stack-depth="${plan.depth}" data-color="${color.hex}" data-share="${color.share.toFixed(2)}" transform="scale(${tracing.scaleX.toFixed(6)} ${tracing.scaleY.toFixed(6)})">${objects}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-regionfill-v8" data-rendering-model="region-layered-fill" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${imageData.width} ${imageData.height}" width="${imageData.width}" height="${imageData.height}" shape-rendering="geometricPrecision" data-vector-engine="imagetracer-regionfill-v9" data-rendering-model="region-layered-fill" data-solid-color-normalization="adjacent-shades" data-gradients="none" data-color-underlap="true" data-color-stacking="containment" data-detail-preservation="foreground" data-curve-continuity="adaptive" data-geometry-classifier="line-curve" role="img"><g id="vector-artwork" data-vector-artwork="true">${layers}</g></svg>`;
 }
 
 function resultFromParts(
