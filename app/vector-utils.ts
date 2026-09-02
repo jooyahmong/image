@@ -197,12 +197,21 @@ export function cropRasterSource(source: RasterSource, crop: CropBox): RasterSou
   };
 }
 
-function rgbToHex(r: number, g: number, b: number) {
-  return `#${[r, g, b].map((value) => value.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+export function rgbToHex(r: number, g: number, b: number) {
+  return `#${[r, g, b].map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+
+export function normalizeHexColor(value: string) {
+  let clean = value.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(clean)) clean = clean.split("").map((character) => `${character}${character}`).join("");
+  if (!/^[0-9a-f]{6}$/i.test(clean)) return null;
+  return `#${clean.toUpperCase()}`;
 }
 
 export function hexToRgb(hex: string) {
-  const clean = hex.replace("#", "");
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) throw new Error(`Invalid hex color: ${hex}`);
+  const clean = normalized.slice(1);
   return {
     r: Number.parseInt(clean.slice(0, 2), 16),
     g: Number.parseInt(clean.slice(2, 4), 16),
@@ -1299,9 +1308,10 @@ function cubicFitError(points: VectorPoint[], curve: CubicCurve, parameters: num
     const parameter = (parameters[index] + parameters[index + 1]) / 2;
     const expected = scalePoint(addPoint(points[index], points[index + 1]), .5);
     const delta = subtractPoint(evaluateCubic(curve, parameter), expected);
-    // The straight midpoint is an approximation of the traced curve between
-    // anchors, so use a 10× tolerance for this supplemental overshoot check.
-    const squaredError = dotProduct(delta, delta) * .01;
+    // Apply the same error budget between anchors as at the anchors. Relaxing
+    // this check lets sparse samples accept a bowed cubic on a straight edge,
+    // visibly swelling thin diagonal strokes at higher tracing resolutions.
+    const squaredError = dotProduct(delta, delta);
     if (squaredError > maximumSquaredError) {
       maximumSquaredError = squaredError;
       splitIndex = Math.max(1, Math.min(points.length - 2, index + 1));
@@ -2488,6 +2498,25 @@ export function encodeIco(images: IcoImage[]) {
   return output;
 }
 
+async function renderFaviconImagePng(image: CanvasImageSource, sourceWidth: number, sourceHeight: number, size: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Favicon rendering is not supported in this browser.");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  const scale = Math.min(size / sourceWidth, size / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  // Fit the complete image without cropping, stretching, or filling its transparency.
+  context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+  const pngBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Favicon rendering failed.")), "image/png");
+  });
+  return new Uint8Array(await pngBlob.arrayBuffer());
+}
+
 async function renderFaviconPng(svg: string, crop: CropBox, size: number) {
   const cropped = cropSvg(svg, crop);
   const blobUrl = URL.createObjectURL(new Blob([cropped], { type: "image/svg+xml" }));
@@ -2498,21 +2527,7 @@ async function renderFaviconPng(svg: string, crop: CropBox, size: number) {
       image.onerror = () => reject(new Error("Favicon rendering failed."));
       image.src = blobUrl;
     });
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Favicon rendering is not supported in this browser.");
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    const scale = Math.min(size / crop.width, size / crop.height);
-    const width = Math.max(1, crop.width * scale);
-    const height = Math.max(1, crop.height * scale);
-    context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
-    const pngBlob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Favicon rendering failed.")), "image/png");
-    });
-    return new Uint8Array(await pngBlob.arrayBuffer());
+    return await renderFaviconImagePng(image, crop.width, crop.height, size);
   } finally {
     URL.revokeObjectURL(blobUrl);
   }
@@ -2529,4 +2544,21 @@ export async function downloadFavicon(svg: string, crop: CropBox, filename = "fa
   })));
   const ico = encodeIco(images);
   return finishDownload(new Blob([ico], { type: mime }), filename, choice.handle);
+}
+
+export async function downloadRasterFavicon(file: Blob, filename = "favicon.ico") {
+  const mime = "image/vnd.microsoft.icon";
+  const choice = await requestSaveHandle(filename, "Original image favicon", mime, ".ico");
+  if (choice.cancelled) return "cancelled" as const;
+  // Decode the upload, not the trimmed/resized tracing source or its SVG result.
+  const bitmap = await createImageBitmap(file);
+  try {
+    const images = await Promise.all([16, 32, 48].map(async (size) => ({
+      size,
+      bytes: await renderFaviconImagePng(bitmap, bitmap.width, bitmap.height, size),
+    })));
+    return await finishDownload(new Blob([encodeIco(images)], { type: mime }), filename, choice.handle);
+  } finally {
+    bitmap.close();
+  }
 }

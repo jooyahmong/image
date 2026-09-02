@@ -66,7 +66,7 @@ globalThis.document = {
 
 const vectorUtilsUrl = new URL("../app/vector-utils.ts", import.meta.url);
 vectorUtilsUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-const { createVectorResult, deleteColors, downloadText, encodeIco } = await import(vectorUtilsUrl.href);
+const { createVectorResult, deleteColors, downloadText, encodeIco, hexToRgb, normalizeHexColor, recolorResult, rgbToHex } = await import(vectorUtilsUrl.href);
 
 function makeArtwork(width, height) {
   const imageData = new TestImageData(width, height);
@@ -495,6 +495,33 @@ test("the same color can be emitted at separate background and foreground depths
   assert.ok(orangeGroup, "the middle fill should be its own stacked layer");
   const orangePath = orangeGroup.svg.match(/<path[^>]* d="([^"]+)"/)?.[1] ?? "";
   assert.equal((orangePath.match(/M\s/g) ?? []).length, 1, "the middle fill must not contain an eye-shaped hole");
+});
+
+test("color entry accepts short and exact HEX values without inventing channels", () => {
+  assert.equal(normalizeHexColor("#fff"), "#FFFFFF");
+  assert.equal(normalizeHexColor("fff"), "#FFFFFF");
+  assert.equal(normalizeHexColor(" #12aBcF "), "#12ABCF");
+  assert.equal(normalizeHexColor("#FFFF"), null);
+  assert.equal(normalizeHexColor("white"), null);
+  assert.deepEqual(hexToRgb("#FFFFFF"), { r: 255, g: 255, b: 255 });
+  assert.deepEqual(hexToRgb("000"), { r: 0, g: 0, b: 0 });
+  assert.equal(rgbToHex(255, 255, 255), "#FFFFFF");
+  assert.equal(rgbToHex(300, -10, 127.6), "#FF0080");
+  assert.throws(() => hexToRgb("#FFFF"), /Invalid hex color/);
+});
+
+test("an exact white palette edit stays exact in the palette and SVG fill", () => {
+  const initial = createVectorResult(sourceFor(makeUnderlapArtwork()), 2, "medium", 50);
+  const targetIndex = initial.palette.findIndex(({ backgroundCandidate }) => !backgroundCandidate);
+  const targetId = initial.palette[targetIndex].id;
+  const white = hexToRgb("#FFFFFF");
+  const palette = initial.palette.map((color, index) => index === targetIndex ? { ...color, ...white, hex: "#FFFFFF" } : { ...color });
+  const recolored = recolorResult(initial, palette, "medium");
+  const changed = recolored.palette.find(({ id }) => id === targetId);
+
+  assert.deepEqual(changed && { r: changed.r, g: changed.g, b: changed.b, hex: changed.hex }, { r: 255, g: 255, b: 255, hex: "#FFFFFF" });
+  assert.match(recolored.svg, /fill="#FFFFFF"/);
+  assert.doesNotMatch(recolored.svg, /(?:NaN|Infinity)/);
 });
 
 test("favicon encoder creates a valid multi-size ICO directory", () => {

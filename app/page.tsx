@@ -14,6 +14,7 @@ import {
   Layers3,
   Merge,
   Paintbrush,
+  Pipette,
   Redo2,
   RotateCcw,
   ShieldCheck,
@@ -36,6 +37,7 @@ import {
   CropBox,
   deleteColors,
   downloadFavicon,
+  downloadRasterFavicon,
   downloadPng,
   downloadText,
   extractObjectResult,
@@ -46,9 +48,11 @@ import {
   highlightSvg,
   loadRaster,
   mergeResult,
+  normalizeHexColor,
   PaletteColor,
   RasterSource,
   recolorResult,
+  rgbToHex,
   VectorResult,
 } from "./vector-utils";
 
@@ -71,6 +75,10 @@ const koreanText: Record<string, string> = {
   "Create high-quality SVG": "고품질 SVG 만들기", "Building high-quality paths…": "고품질 패스를 만드는 중…",
   "Shadows and highlights are folded into solid base colors. No gradients are created.": "그림자와 하이라이트는 원래의 단색 면으로 통합되며 그라데이션은 만들지 않습니다.", "Settings": "설정", "Original": "원본", "Reduced": "색상 축소",
   "Edit palette": "팔레트 편집", "Apply": "적용", "Select a color to highlight its exact area.": "색상을 선택해 정확한 영역을 강조 표시하세요.",
+  "Choose a color": "색상 선택", "Visual picker": "화면에서 선택", "Eyedropper": "스포이드", "Exact HEX": "정확한 HEX", "RGB values": "RGB 값",
+  "Quick colors": "빠른 색상", "White": "흰색", "Black": "검정", "Original color": "원래 색상", "Cancel": "취소", "Apply color": "색상 적용",
+  "Live preview": "실시간 미리보기", "Valid colors appear on the artwork automatically.": "올바른 색상은 그림에 자동으로 바로 반영됩니다.", "Done": "완료",
+  "You can choose visually, enter an exact HEX or RGB value, or use the eyedropper.": "화면에서 선택하거나 정확한 HEX·RGB 값을 입력하고, 스포이드도 사용할 수 있습니다.",
   "Select several to compare, merge, or delete them.": "여러 색상을 선택해 비교, 병합 또는 삭제할 수 있습니다.", "Keep-area brush": "영역 유지 브러시",
   "Brush parts of the selected color that must not be deleted.": "선택한 색상 중 삭제하면 안 되는 부분을 브러시로 지정합니다.", "Use brush": "브러시 사용", "Brush on": "브러시 켜짐",
   "Keep": "유지", "Undo brush": "브러시 취소", "Clear": "지우기", "Brush size": "브러시 크기", "Merge": "병합", "Delete selected": "선택 삭제",
@@ -95,6 +103,22 @@ type ViewMode = "original" | "reduced" | "vector";
 type BrushTool = "protect" | "unprotect";
 type CropDragMode = "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 type BrushPoint = { x: number; y: number; scale: number; radius: number };
+type ColorEditorState = { index: number; hex: string; r: string; g: string; b: string; error: string };
+
+function makeColorEditorState(index: number, hex: string): ColorEditorState {
+  const normalized = normalizeHexColor(hex) ?? "#000000";
+  const { r, g, b } = hexToRgb(normalized);
+  return { index, hex: normalized, r: String(r), g: String(g), b: String(b), error: "" };
+}
+
+function colorEditorPreview(state: ColorEditorState) {
+  const normalized = normalizeHexColor(state.hex);
+  if (normalized) return normalized;
+  const channels = [state.r, state.g, state.b].map(Number);
+  return channels.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
+    ? rgbToHex(channels[0], channels[1], channels[2])
+    : "#000000";
+}
 
 function cleanFilename(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9-_]+/g, "-") || "vector-artwork";
@@ -128,6 +152,7 @@ export default function Home() {
   const historyIndex = useRef(-1);
   const initialPalette = useRef<PaletteColor[]>([]);
   const [source, setSource] = useState<RasterSource | null>(null);
+  const [originalUpload, setOriginalUpload] = useState<{ file: File; url: string } | null>(null);
   const [result, setResult] = useState<VectorResult | null>(null);
   const [fileName, setFileName] = useState("");
   const [colorCount, setColorCount] = useState(8);
@@ -139,6 +164,7 @@ export default function Home() {
   const [preset, setPreset] = useState<keyof typeof presets>("original");
   const [historyStatus, setHistoryStatus] = useState({ index: -1, length: 0 });
   const [cropOpen, setCropOpen] = useState(false);
+  const [originalFaviconOpen, setOriginalFaviconOpen] = useState(false);
   const [crop, setCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
   const [autoCropApplied, setAutoCropApplied] = useState(false);
   const [sourceCrop, setSourceCrop] = useState<CropBox>({ x: 0, y: 0, width: 1, height: 1 });
@@ -155,10 +181,16 @@ export default function Home() {
   const [protectedCount, setProtectedCount] = useState(0);
   const [maskRevision, setMaskRevision] = useState(0);
   const [selectedObjectIndex, setSelectedObjectIndex] = useState<number | null>(null);
+  const [colorEditor, setColorEditor] = useState<ColorEditorState | null>(null);
+  const [eyeDropperSupported, setEyeDropperSupported] = useState(false);
   const [language, setLanguage] = useState<"en" | "ko">("en");
   const [legalOpen, setLegalOpen] = useState(false);
+  useEffect(() => () => {
+    if (originalUpload) URL.revokeObjectURL(originalUpload.url);
+  }, [originalUpload]);
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("lang") === "ko") setLanguage("ko");
+    setEyeDropperSupported("EyeDropper" in window);
   }, []);
   useEffect(() => {
     const root = document.querySelector<HTMLElement>("main.app-shell");
@@ -186,6 +218,12 @@ export default function Home() {
 
   const currentStep = cropOpen ? 4 : result ? 2 : source ? 1 : 0;
   const korean = language === "ko";
+  const isOriginalExport = viewMode === "original" && !!originalUpload;
+  const originalEditorColor = colorEditor && result
+    ? initialPalette.current.find((color) => color.id === result.palette[colorEditor.index]?.id)
+    : null;
+  const normalizedEditorColor = colorEditor ? normalizeHexColor(colorEditor.hex) : null;
+  const liveColorPending = !!(colorEditor && normalizedEditorColor && result?.palette[colorEditor.index]?.hex !== normalizedEditorColor);
   const setSiteLanguage = (next: "en" | "ko") => {
     setLanguage(next);
     const url = new URL(window.location.href);
@@ -213,10 +251,14 @@ export default function Home() {
     setBusy(true);
     try {
       const loaded = await loadRaster(file);
+      setOriginalUpload({ file, url: URL.createObjectURL(file) });
+      setOriginalFaviconOpen(false);
+      setCropOpen(false);
       setFileName(file.name);
       setSource(loaded);
       setSourceCrop({ x: 0, y: 0, width: loaded.width, height: loaded.height });
       setResult(null);
+      setColorEditor(null);
       history.current = [];
       historyIndex.current = -1;
       setHistoryStatus({ index: -1, length: 0 });
@@ -329,10 +371,70 @@ export default function Home() {
 
   const updateColor = useCallback(async (index: number, hex: string) => {
     if (!result || result.palette[index]?.locked) return;
-    const rgb = hexToRgb(hex);
-    const palette = result.palette.map((color, colorIndex) => colorIndex === index ? { ...color, ...rgb, hex: hex.toUpperCase() } : { ...color });
+    const normalized = normalizeHexColor(hex);
+    if (!normalized) return;
+    const rgb = hexToRgb(normalized);
+    const palette = result.palette.map((color, colorIndex) => colorIndex === index ? { ...color, ...rgb, hex: normalized } : { ...color });
     await commitResult(recolorResult(result, palette, cleanup));
   }, [cleanup, commitResult, result]);
+
+  const openColorEditor = useCallback((index: number) => {
+    const color = result?.palette[index];
+    if (!color || color.locked || busy) return;
+    setColorEditor(makeColorEditorState(index, color.hex));
+  }, [busy, result]);
+
+  const editHexColor = useCallback((value: string) => {
+    setColorEditor((current) => {
+      if (!current) return null;
+      const normalized = normalizeHexColor(value);
+      if (!normalized) {
+        return { ...current, hex: value.toUpperCase(), error: language === "ko" ? "HEX는 #FFF 또는 #FFFFFF 형식으로 입력해 주세요." : "Enter HEX as #FFF or #FFFFFF." };
+      }
+      const { r, g, b } = hexToRgb(normalized);
+      return { ...current, hex: value.toUpperCase(), r: String(r), g: String(g), b: String(b), error: "" };
+    });
+  }, [language]);
+
+  const editRgbColor = useCallback((channel: "r" | "g" | "b", value: string) => {
+    setColorEditor((current) => {
+      if (!current) return null;
+      const clean = value.replace(/[^0-9]/g, "").slice(0, 3);
+      const next = { ...current, [channel]: clean };
+      const channels = [next.r, next.g, next.b].map((item) => item === "" ? Number.NaN : Number(item));
+      if (channels.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) {
+        return { ...next, error: language === "ko" ? "RGB 값은 각각 0부터 255까지 입력해 주세요." : "Enter each RGB value from 0 to 255." };
+      }
+      return { ...next, hex: rgbToHex(channels[0], channels[1], channels[2]), error: "" };
+    });
+  }, [language]);
+
+  const setEditorColor = useCallback((hex: string) => {
+    setColorEditor((current) => current ? makeColorEditorState(current.index, hex) : null);
+  }, []);
+
+  const pickScreenColor = useCallback(async () => {
+    const EyeDropperConstructor = (window as typeof window & {
+      EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> };
+    }).EyeDropper;
+    if (!EyeDropperConstructor) return;
+    try {
+      const selection = await new EyeDropperConstructor().open();
+      setEditorColor(selection.sRGBHex);
+    } catch (caught) {
+      if (!(caught instanceof DOMException) || caught.name !== "AbortError") {
+        setColorEditor((current) => current ? { ...current, error: language === "ko" ? "화면에서 색상을 가져오지 못했습니다." : "We couldn't pick that screen color." } : null);
+      }
+    }
+  }, [language, setEditorColor]);
+
+  useEffect(() => {
+    if (!colorEditor || colorEditor.error || busy || !result) return;
+    const normalized = normalizeHexColor(colorEditor.hex);
+    if (!normalized || result.palette[colorEditor.index]?.hex === normalized) return;
+    const timer = window.setTimeout(() => void updateColor(colorEditor.index, normalized), 160);
+    return () => window.clearTimeout(timer);
+  }, [busy, colorEditor, result, updateColor]);
 
   const toggleLock = useCallback((index: number) => {
     if (!result) return;
@@ -569,7 +671,17 @@ export default function Home() {
     clearProtection();
   }, [cleanup, clearProtection, result]);
 
+  const openOriginalFavicon = useCallback(() => {
+    if (!originalUpload || busy || exportState) return;
+    setExportMessage("");
+    setOriginalFaviconOpen(true);
+  }, [busy, exportState, originalUpload]);
+
   const openCrop = useCallback(() => {
+    if (viewMode === "original" && originalUpload) {
+      openOriginalFavicon();
+      return;
+    }
     if (!result) return;
     const visibleBounds = getVisibleBounds(result);
     const hasTransparentOuterSpace = visibleBounds.x > 0 || visibleBounds.y > 0 ||
@@ -580,7 +692,7 @@ export default function Home() {
     setExportMessage("");
     setSelectedObjectIndex(null);
     setCropOpen(true);
-  }, [result]);
+  }, [openOriginalFavicon, originalUpload, result, viewMode]);
 
   const resetCrop = useCallback(() => {
     if (!result) return;
@@ -681,6 +793,22 @@ export default function Home() {
       setExportState("");
     }
   }, [crop, korean, result]);
+
+  const exportOriginalFavicon = useCallback(async () => {
+    if (!originalUpload) return;
+    setExportState("original-favicon");
+    setExportMessage("");
+    try {
+      const status = await downloadRasterFavicon(originalUpload.file);
+      if (status !== "cancelled") setExportMessage(status === "saved"
+        ? (korean ? "원본 파비콘이 저장되었습니다." : "Original favicon saved successfully.")
+        : (korean ? "원본 파비콘 다운로드가 시작되었습니다." : "Original favicon download started."));
+    } catch (caught) {
+      setExportMessage(korean ? "파비콘 생성에 실패했습니다. 다시 시도해 주세요." : (caught instanceof Error ? caught.message : "Favicon download failed. Please try again."));
+    } finally {
+      setExportState("");
+    }
+  }, [korean, originalUpload]);
 
   const exportObjectSvg = useCallback(async (objectCrop: (typeof separateObjects)[number], index: number) => {
     if (!result) return;
@@ -806,6 +934,7 @@ export default function Home() {
             </div>
             <input ref={fileInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void acceptFile(event.target.files?.[0])}/>
             {error && <p className="error-message">{error}</p>}
+            {originalUpload && <button className="original-favicon-shortcut text-button" type="button" disabled={busy || !!exportState} onClick={openOriginalFavicon}><FileImage size={15}/>{korean ? "변환 없이 원본 파비콘 저장" : "Save original as favicon without conversion"}</button>}
             <div className="local-processing"><LockKeyhole size={15}/><span><b>Private by design.</b> Nothing is uploaded or stored.</span></div>
           </div>
 
@@ -832,6 +961,7 @@ export default function Home() {
                 <button type="button" aria-label="Zoom in" disabled={zoom >= 400} onClick={() => setZoom((current) => Math.min(400, current + 25))}><ZoomIn size={15}/></button>
               </div>
             </div>
+            {isOriginalExport && <p className="original-favicon-hint" id="original-favicon-hint" role="status">{korean ? "원본 이미지를 SVG 변환 없이 파비콘으로 저장할 수 있어요." : "Save the original image as a favicon without converting it to SVG."}</p>}
             <div
               ref={artboardRef}
               className={`artboard ${busy ? "processing" : ""} ${panEnabled ? "pan-ready" : ""} ${isPanning ? "panning" : ""}`}
@@ -841,7 +971,7 @@ export default function Home() {
               onPointerCancel={stopPan}
             >
               <div className="zoom-stage" style={{ width: `${zoom}%`, minHeight: `${Math.round(550 * zoom / 100)}px` }}>
-                {viewMode === "original" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={source?.previewUrl} alt="Original artwork" />}
+                {viewMode === "original" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={originalUpload?.url ?? source?.previewUrl} alt="Original artwork" />}
                 {viewMode === "reduced" && <img style={{ maxHeight: `${Math.round(490 * zoom / 100)}px` }} src={result.previewUrl} alt="Color-reduced artwork" />}
                 {viewMode === "vector" && (
                   <div ref={previewRef} style={{ height: `${Math.round(490 * zoom / 100)}px` }} className={`svg-preview ${selectedColors.length ? "showing-selection" : ""} ${brushMode && !panMode ? "brush-active" : ""}`} aria-label="SVG preview">
@@ -890,13 +1020,59 @@ export default function Home() {
               {result.palette.map((color, index) => (
                 <div className={`palette-item ${selectedColors.includes(index) ? "selected" : ""}`} key={color.id}>
                   <button className="select-dot" aria-label={`${selectedColors.includes(index) ? "Hide" : "Highlight"} ${color.hex} area`} type="button" onClick={() => toggleColorSelection(index)}>{selectedColors.includes(index) ? <Check size={11}/> : <Eye size={11}/>}</button>
-                  <label className="swatch" style={{ backgroundColor: color.hex }} aria-label={`Change ${color.hex}`}><input type="color" value={color.hex} disabled={color.locked || busy} onChange={(event) => void updateColor(index, event.target.value)}/></label>
+                  <button className="swatch" style={{ backgroundColor: color.hex }} aria-label={`Change ${color.hex}`} type="button" disabled={color.locked || busy} onClick={() => openColorEditor(index)}><Pipette size={14}/></button>
                   <button className="color-meta" type="button" onClick={() => toggleColorSelection(index)}><strong>{color.hex}</strong><span>{color.share.toFixed(1)}% of image</span>{color.backgroundCandidate && <em>Likely background</em>}</button>
                   <div className="share-track"><i style={{ width: `${Math.max(3, color.share)}%`, backgroundColor: color.hex }}/></div>
                   <button className="lock-button" aria-label={color.locked ? `Unlock ${color.hex}` : `Lock ${color.hex}`} type="button" onClick={() => toggleLock(index)}>{color.locked ? <Lock size={14}/> : <Unlock size={14}/>}</button>
                 </div>
               ))}
             </div>
+            {colorEditor && result.palette[colorEditor.index] && (
+              <section className="color-editor-panel" aria-labelledby="color-editor-title">
+                <div className="color-editor-heading">
+                  <div className="color-editor-title-wrap">
+                    <span className="color-editor-preview" style={{ backgroundColor: colorEditorPreview(colorEditor) }}/>
+                    <div><span className="step-label">{korean ? "색상 선택" : "Choose a color"}</span><h3 id="color-editor-title">{colorEditorPreview(colorEditor)}</h3></div>
+                  </div>
+                  <button aria-label="Close color editor" type="button" disabled={busy || liveColorPending} onClick={() => setColorEditor(null)}><X size={17}/></button>
+                </div>
+                <p className="live-color-status" aria-live="polite"><i className={busy || liveColorPending ? "updating" : ""}/><b>{korean ? "실시간 미리보기" : "Live preview"}</b>{busy || liveColorPending ? <> · {korean ? "변경 중…" : "Updating…"}</> : null}</p>
+
+                <div className="visual-picker-row">
+                  <label className="visual-color-picker">
+                    <span><span className="visual-color-dot" style={{ backgroundColor: colorEditorPreview(colorEditor) }}/>{korean ? "화면에서 선택" : "Visual picker"}</span>
+                    <input aria-label="Visual picker" type="color" value={colorEditorPreview(colorEditor)} disabled={busy} onChange={(event) => setEditorColor(event.target.value)}/>
+                  </label>
+                  {eyeDropperSupported && <button className="eyedropper-button" type="button" disabled={busy} onClick={() => void pickScreenColor()}><Pipette size={16}/>{korean ? "스포이드" : "Eyedropper"}</button>}
+                </div>
+
+                <label className="hex-color-field">
+                  <span>HEX</span>
+                  <div><b>#</b><input aria-label="Exact HEX" aria-invalid={!!colorEditor.error} value={colorEditor.hex.replace(/^#/, "")} maxLength={6} spellCheck={false} autoCapitalize="characters" onChange={(event) => editHexColor(`#${event.target.value}`)}/></div>
+                </label>
+
+                <fieldset className="rgb-color-fields">
+                  <legend>RGB</legend>
+                  <div className="rgb-input-grid">
+                    {(["r", "g", "b"] as const).map((channel) => (
+                      <label key={channel}><span>{channel.toUpperCase()}</span><input aria-label={`${channel.toUpperCase()} value`} inputMode="numeric" min="0" max="255" value={colorEditor[channel]} onChange={(event) => editRgbColor(channel, event.target.value)}/></label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <fieldset className="quick-color-fieldset">
+                  <legend>{korean ? "빠른 선택" : "Quick"}</legend>
+                  <div className="quick-color-buttons">
+                    <button type="button" disabled={busy} onClick={() => setEditorColor("#FFFFFF")}><i style={{ backgroundColor: "#FFFFFF" }}/>{korean ? "흰색" : "White"}</button>
+                    <button type="button" disabled={busy} onClick={() => setEditorColor("#000000")}><i style={{ backgroundColor: "#000000" }}/>{korean ? "검정" : "Black"}</button>
+                    {originalEditorColor && <button type="button" disabled={busy} onClick={() => setEditorColor(originalEditorColor.hex)}><i style={{ backgroundColor: originalEditorColor.hex }}/>{korean ? "원래" : "Original"}</button>}
+                  </div>
+                </fieldset>
+
+                {colorEditor.error && <p className="color-editor-error" role="alert">{colorEditor.error}</p>}
+                <button className="color-editor-done" type="button" disabled={busy || liveColorPending || !!colorEditor.error} onClick={() => setColorEditor(null)}><Check size={15}/>{korean ? "완료" : "Done"}</button>
+              </section>
+            )}
             <div className={`brush-panel ${brushMode ? "active" : ""}`}>
               <div className="brush-heading">
                 <div><strong>Keep-area brush</strong><span>Brush parts of the selected color that must not be deleted.</span></div>
@@ -919,9 +1095,27 @@ export default function Home() {
               <button className="delete-button" type="button" disabled={!selectedColors.length || selectedColors.length >= result.palette.length || busy || selectedColors.every((index) => result.palette[index]?.locked)} onClick={() => void deleteSelected()}><Trash2 size={15}/>Delete selected</button>
             </div>
             {result.palette.some((color) => color.backgroundCandidate) && <p className="background-tip">Tip: select <b>Likely background</b>, check the highlighted area, then choose Delete selected.</p>}
-            <button className="primary-button export-next" type="button" onClick={openCrop}><Crop size={17}/>Final crop & export</button>
+            <button className="primary-button export-next" type="button" onClick={openCrop} aria-describedby={isOriginalExport ? "original-favicon-hint" : undefined}>
+              {isOriginalExport ? <FileImage size={17}/> : <Crop size={17}/>}
+              <span>{isOriginalExport ? (korean ? "원본 파비콘 저장 (.ico)" : "Save original favicon (.ico)") : (korean ? "자르기 및 내보내기" : "Final crop & export")}</span>
+            </button>
           </aside>
         </section>
+      )}
+
+      {originalFaviconOpen && originalUpload && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="crop-modal original-favicon-modal" role="dialog" aria-modal="true" aria-labelledby="original-favicon-title">
+            <div className="modal-heading"><div><span className="step-label">FAVICON</span><h2 id="original-favicon-title">{korean ? "원본 파비콘 내보내기" : "Export original favicon"}</h2></div><button aria-label={korean ? "원본 파비콘 창 닫기" : "Close original favicon dialog"} type="button" disabled={!!exportState} onClick={() => setOriginalFaviconOpen(false)}><X size={19}/></button></div>
+            <div className="original-favicon-content">
+              <div className="crop-preview original-favicon-preview"><img src={originalUpload.url} alt={korean ? "파비콘으로 저장할 원본 이미지 전체" : "Complete original image for favicon"}/></div>
+              <p>{korean ? "색상 축소·SVG 변환·크롭 없이 원본 이미지 전체를 사용합니다." : "Uses the complete original upload, without color reduction, SVG conversion, or cropping."}</p>
+              <p>{korean ? "비율과 투명도를 유지한 16·32·48px ICO 파일로 저장합니다." : "Saves a 16, 32, and 48px ICO while preserving aspect ratio and transparency."}</p>
+              <div className="download-buttons"><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportOriginalFavicon()}><FileImage size={16}/>{exportState === "original-favicon" ? (korean ? "생성 중…" : "Rendering…") : (korean ? "원본 파비콘 저장" : "Save original favicon")}</button></div>
+              {exportMessage && <p className="download-message" role="status">{exportMessage}</p>}
+            </div>
+          </section>
+        </div>
       )}
 
       {cropOpen && result && (

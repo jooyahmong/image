@@ -48,3 +48,52 @@ test("uses fixed balanced vector settings without exposing redundant controls", 
   assert.doesNotMatch(page, /id="smoothness"|id="anchor-simplification"|Balanced \(50\):/);
   assert.doesNotMatch(page, /Basic mode|Advanced mode|기본 모드|고급 모드/);
 });
+
+test("keeps the multi-mode color editor inline with a live artwork preview", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(page, /className="color-editor-panel"/);
+  assert.match(page, /type="color"/);
+  assert.match(page, /aria-label="Exact HEX"/);
+  assert.match(page, /"RGB values"/);
+  assert.match(page, /className="rgb-input-grid"/);
+  assert.match(page, /"Eyedropper"/);
+  assert.match(page, /실시간 미리보기/);
+  assert.doesNotMatch(page, /className="color-editor-help"/);
+  assert.doesNotMatch(page, /className="color-editor-backdrop"/);
+  assert.match(styles, /\.color-editor-panel\s*\{/);
+  assert.match(styles, /\.color-editor-panel \.step-label\s*\{[^}]*font-size:\s*8\.4px/);
+  assert.match(styles, /\.visual-color-picker > span\s*\{[^}]*white-space:\s*nowrap;[^}]*word-break:\s*keep-all/);
+  assert.match(styles, /\.rgb-input-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,minmax\(0,1fr\)\)/);
+  assert.doesNotMatch(styles, /\.color-editor-backdrop\s*\{/);
+});
+
+test("quick color choices share the full row in three equal columns", () => {
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.quick-color-fieldset\s*\{\s*display:\s*block;/);
+  assert.match(styles, /\.quick-color-buttons\s*\{[^}]*width:\s*100%;[^}]*grid-template-columns:\s*repeat\(3,minmax\(0,1fr\)\)/);
+});
+
+test("original-view export uses the upload and leaves SVG export on the vector result", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /setOriginalUpload\(\{ file, url: URL\.createObjectURL\(file\) \}\)/);
+  assert.match(page, /viewMode === "original" && originalUpload\)\s*\{\s*openOriginalFavicon\(\);\s*return;/);
+  assert.match(page, /downloadRasterFavicon\(originalUpload\.file\)/);
+  assert.match(page, /originalFaviconOpen && originalUpload &&/);
+  assert.match(page, /className="original-favicon-shortcut text-button"/);
+  assert.match(page, /downloadFavicon\(result\.svg, crop\)/);
+  assert.match(page, /downloadPng\(result\.svg, crop,/);
+  assert.match(page, /URL\.revokeObjectURL\(originalUpload\.url\)/);
+});
+
+test("original preview explains favicon export and labels the export button for its source", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(page, /const isOriginalExport = viewMode === "original" && !!originalUpload/);
+  assert.match(page, /isOriginalExport && <p className="original-favicon-hint"/);
+  assert.match(page, /원본 이미지를 SVG 변환 없이 파비콘으로 저장할 수 있어요\./);
+  assert.match(page, /Save the original image as a favicon without converting it to SVG\./);
+  assert.match(page, /aria-describedby=\{isOriginalExport \? "original-favicon-hint" : undefined\}/);
+  assert.match(page, /isOriginalExport \? \(korean \? "원본 파비콘 저장 \(\.ico\)" : "Save original favicon \(\.ico\)"\) : \(korean \? "자르기 및 내보내기" : "Final crop & export"\)/);
+  assert.match(styles, /\.original-favicon-hint\s*\{[^}]*margin:\s*0;[^}]*padding:\s*6px 16px;[^}]*font-size:\s*12px/);
+});
