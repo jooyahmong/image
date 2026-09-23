@@ -97,18 +97,47 @@ Addressed all three Phase C.5 findings that were fixable without AI:
   regression (untouched).
 
 Full detail, before/after numbers, and remaining known limitations: see the
-report given alongside this update (not yet copied into a doc file) and
-`docs/EXTRACT_ELEMENTS.md`.
+report given alongside this update and `docs/EXTRACT_ELEMENTS.md`. Committed
+as `41e7ea1`.
+
+## Smart Extract — Planning Phase (docs only, see `docs/SMART_EXTRACT.md`)
+
+The real core user need identified: overlapping/touching template images
+also need automatic separation, which Quick Extract's connectivity-based
+Fast Path cannot do by construction (documented limitation, not a bug).
+This planning pass, recorded in full in `docs/SMART_EXTRACT.md`:
+
+- Split the concept into **Quick Extract** (shipped, free, local, instant --
+  the current Fast Path) and **Smart Extract** (planned, not built -- real
+  instance segmentation, likely with real compute cost).
+- Distinguished **visible-only separation** (recover exactly what's visible,
+  no invented pixels -- achievable with existing segmentation techniques)
+  from **full asset reconstruction** (guessing the hidden/occluded part of
+  an object -- generative, error-prone, explicitly out of scope for now).
+  Smart Extract should target visible-only separation only.
+- Recommended a **hybrid** posture: keep Quick Extract exactly as-is;
+  treat Smart Extract as a separate, later, explicitly opt-in path whose
+  local-vs-server architecture is not decided yet and should be chosen from
+  real measurements, not assumption.
+- Flagged a real conflict with `docs/DECISIONS.md` (no backend, V1 free,
+  donation-only): a server-hosted segmentation model has real per-image
+  cost that a voluntary-donation model likely can't cover, so Smart Extract
+  is a candidate for a future paid/rate-limited tier, not a free V1 add-on.
+- No AI pipeline was implemented. No code was changed. A UI sketch
+  ("Quick Extract" / "Smart Extract (Beta)" as two distinct entry points)
+  is described in `docs/SMART_EXTRACT.md` §12 but not built.
 
 ## Next
 
-1. Get sign-off on Phase C.6, then decide whether to commit it (per
-   instruction, not committed yet -- report first).
-2. Real-user QA per Phase C.5/C.6 instructions: run at least 3 real
-   templates through `/extract-elements` before calling this
+1. Real-user QA per Phase C.5/C.6 instructions: run at least 3 real
+   templates through `/extract-elements` before calling Quick Extract
    production-ready -- (A) a white/transparent asset sheet, (B) a
    cream/pastel-background asset sheet, (C) a template with some elements
-   close together or overlapping. Synthetic QA only goes so far.
+   close together or overlapping. Synthetic QA only goes so far, and this
+   is also the same evidence Smart Extract's §11 step 1 needs.
+2. Per `docs/SMART_EXTRACT.md` §11: feasibility-spike a real segmentation
+   model against real template images (not natural-photo benchmarks)
+   before committing to local, server, or hybrid for Smart Extract.
 3. Phase D: add rename and exclude/remove to the existing element cards
    (select-all/deselect-all and individual selection are already done).
 4. Phase E: reuse the existing SVG engine for extracted SVG assets and add
@@ -116,9 +145,9 @@ report given alongside this update (not yet copied into a doc file) and
 5. Decide the semantic-metadata architecture before Phase F filenames and
    Phase G keywords — current cards use placeholder names ("Element 1" /
    "요소 1").
-6. Revisit AI-assisted detection only as an explicit opt-in, WebGPU-gated
-   addition later (see `docs/ELEMENT_DETECTION_SPIKE.md`); still not
-   required for V1.
+6. AI-assisted detection for Quick Extract itself is still not required
+   (see `docs/ELEMENT_DETECTION_SPIKE.md`); Smart Extract is the separate,
+   deliberate path for the overlapping-template need instead.
 7. Keep the route hidden until Phases C–J pass end to end and navigation
    exposure is explicitly approved.
 
