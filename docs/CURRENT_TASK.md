@@ -171,7 +171,7 @@ personally-run benchmark:
   (non-synthetic) overlapping template images, in an environment that can
   actually reach the model host.
 
-## Phase D — Quick Extract Review Tools (not committed yet)
+## Phase D — Quick Extract Review Tools (committed as `57fbcb8`)
 
 Decision: Smart Extract stays deferred (see `docs/DECISIONS.md`); Quick
 Extract is being finished first. This phase adds Review-step editing to
@@ -219,23 +219,85 @@ Quick Extract only -- no Smart Extract, no export formats yet.
   passing, including every existing Image-to-SVG regression (untouched --
   `app/page.tsx` and `app/vector-utils.ts` were not touched this phase).
 
+## Phase E — Export PNG / JPG / SVG (not committed yet)
+
+Review cards can now actually leave the browser as files. Export is scoped
+to `!excluded && selected` cards -- the same "selected" checkbox Merge
+already uses, not a second notion of "chosen." No CSV, keywords, ZIP,
+automatic filenames, or donation UI yet, as scoped.
+
+- **New file `app/extract-elements-export.ts`**, deliberately separate
+  from `extract-elements-utils.ts`. It's the only place Extract Elements
+  imports `vector-utils.ts`. Reason: when the vector-utils import lived in
+  `extract-elements-utils.ts` itself, the Fast Path Worker bundle (which
+  only needs the pure detection functions) ballooned from 2.4 KB to
+  70.75 KB, because Vite bundles per module graph and `extract-elements-worker.ts`
+  transitively imports `extract-elements-utils.ts`. Splitting export into
+  its own module fixed the worker back to 2.41 KB without changing either
+  side's behavior.
+- **PNG**: `exportCardAsPngBlob` re-crops the card's real source pixels via
+  the shared `extractCardPixels` (now used by every renderer/exporter, not
+  just previews) -- never a screenshot of the rendered preview -- and keeps
+  alpha exactly as detected/merged.
+- **JPG**: `exportCardAsJpgBlob` draws the same crop onto its own scratch
+  canvas, then `drawImage`s that onto a canvas pre-filled with a solid
+  background (white by default; the function already takes a `background`
+  parameter for a later color option, not exposed in this UI). `drawImage`
+  is what actually alpha-composites it -- `putImageData` alone would just
+  overwrite pixels with no blending.
+- **SVG**: `exportCardAsSvgString` reuses `createVectorResult` from
+  `vector-utils.ts` unmodified -- it only builds the `RasterSource` wrapper
+  `createVectorResult` expects (fixed `colorCount=8`, `cleanup="medium"`,
+  `anchorSimplification=50`, matching the main editor's own defaults) and
+  returns `.svg`. No second SVG engine. A test asserts the output actually
+  contains `data-vector-engine="imagetracer-regionfill-v9"`, the real
+  engine's own marker, not a stub's.
+- **Filenames**: `sanitizeFilenameBase` matches the existing
+  `cleanFilename` in `app/page.tsx` (strip a trailing extension, replace
+  anything outside `[a-zA-Z0-9-_]` with `-`, fallback if empty) so exports
+  look like every other download this app produces.
+  `buildExportFilename` numbers collisions (`flower.png`, `flower-2.png`,
+  ...) case-insensitively against every filename handed out so far this
+  session.
+- **Download**: new `downloadBlob` in `vector-utils.ts` (purely additive --
+  reuses the existing private `requestSaveHandle`/`finishDownload` helpers
+  `downloadText`/`downloadPng` already call, so the save UX is identical;
+  neither existing function was changed).
+- **UI**: each card gained a `[PNG] [JPG] [SVG]` row, disabled unless the
+  card is an active export candidate, with a per-button spinner and a
+  short inline error that doesn't block other cards' exports. The "next"
+  aside now correctly advertises only what's still missing (CSV, ZIP), not
+  PNG/JPG/SVG, which are done.
+- **Tooling note**: fixed `tsconfig.json` to set `allowImportingTsExtensions: true`
+  and gave relevant relative imports explicit `.ts` extensions, because
+  Node's native TS execution (used by `node --test`) does not resolve
+  extensionless relative specifiers the way Vite does -- needed once
+  `extract-elements-utils.ts`/`extract-elements-export.ts` started
+  importing each other and `vector-utils.ts` directly.
+- Tests: 15 new (PNG transparency + dimensions, PNG on a merged card, JPG
+  white-background compositing (real alpha math in the mock, not just a
+  function-was-called check), export-candidate gating, SVG reuses the real
+  engine (asserted via its own marker), SVG on a merged card, 2 filename-
+  sanitize cases, 2 collision-numbering cases) -- 79 tests total, all
+  passing, including every existing Image-to-SVG regression.
+
 ## Next
 
-1. Get sign-off on Phase D before deciding whether to commit it (per
+1. Get sign-off on Phase E before deciding whether to commit it (per
    instruction, not committed yet -- report first).
 2. Real-user QA: run at least 3 real templates through `/extract-elements`
    before calling Quick Extract production-ready -- (A) a
    white/transparent asset sheet, (B) a cream/pastel-background asset
    sheet, (C) a template with some elements close together or merged by
-   Quick Extract, to confirm Merge/Rename/Exclude actually make that
-   result usable. Synthetic QA only goes so far.
-3. Phase E: reuse the existing SVG engine for extracted SVG assets and add
-   PNG/JPG export -- the natural next step now that Review has real
-   editing tools, per Phase D's own "not yet" list (no filenames/CSV/ZIP/
-   SVG/JPG export or donation UI were added this phase).
-4. Decide the semantic-metadata architecture before Phase F filenames and
+   Quick Extract -- and this time actually download PNG/JPG/SVG for each
+   to confirm real-browser export matches what the Node-mocked tests
+   predict. Synthetic QA only goes so far.
+3. Decide the semantic-metadata architecture before Phase F filenames and
    Phase G keywords — cards still use placeholder/manually-renamed names,
    no content-based automatic naming.
+4. Phase H (per this task's own numbering): CSV metadata and a Download
+   All ZIP for every selected asset at once -- explicitly deferred again
+   this phase.
 5. Smart Extract stays deferred per `docs/DECISIONS.md`; whoever revisits
    it needs model access first (see `docs/SMART_EXTRACT_SPIKE.md` §7) --
    not blocking Quick Extract V1.

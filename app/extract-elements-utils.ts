@@ -279,33 +279,13 @@ export async function decodeImageFileToRasterSource(file: File): Promise<RasterS
 }
 
 export async function renderElementPreview(source: RasterSourceData, labels: Int32Array, region: ElementRegion): Promise<string> {
+  const pixels = extractCardPixels(source, labels, region, new Set([region.id]));
   const canvas = document.createElement("canvas");
   canvas.width = region.width;
   canvas.height = region.height;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Canvas 2D context is unavailable.");
-  const output = context.createImageData(region.width, region.height);
-
-  for (let localY = 0; localY < region.height; localY += 1) {
-    const sourceY = region.y + localY;
-    for (let localX = 0; localX < region.width; localX += 1) {
-      const sourceX = region.x + localX;
-      const outputOffset = (localY * region.width + localX) * 4;
-      if (sourceX >= source.width || sourceY >= source.height) {
-        output.data[outputOffset + 3] = 0;
-        continue;
-      }
-      const sourcePixel = sourceY * source.width + sourceX;
-      const sourceOffset = sourcePixel * 4;
-      const included = labels[sourcePixel] === region.id;
-      output.data[outputOffset] = source.data[sourceOffset];
-      output.data[outputOffset + 1] = source.data[sourceOffset + 1];
-      output.data[outputOffset + 2] = source.data[sourceOffset + 2];
-      output.data[outputOffset + 3] = included ? source.data[sourceOffset + 3] : 0;
-    }
-  }
-
-  context.putImageData(output, 0, 0);
+  context.putImageData(toImageData(pixels, region.width, region.height), 0, 0);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Element preview rendering failed.");
   return URL.createObjectURL(blob);
@@ -506,6 +486,14 @@ export function toggleCardExcluded(cards: ReviewCard[], id: number): ReviewCard[
   return cards.map((card) => card.id === id ? { ...card, excluded: !card.excluded } : card);
 }
 
+// A card is an active export candidate once the user has both kept it
+// (not excluded) and selected it for the current action -- exporting reuses
+// the same "selected" checkbox Merge already uses, rather than a second,
+// separate notion of "chosen."
+export function isExportCandidate(card: ReviewCard, selectedIds: ReadonlySet<number>): boolean {
+  return !card.excluded && selectedIds.has(card.id);
+}
+
 // --- Merge -----------------------------------------------------------
 //
 // Review-step editing tool: combine several already-detected elements into
@@ -532,6 +520,39 @@ export function computeUnionBounds(regions: Bounds[]): Bounds {
   return { x: minX, y: minY, width: maxRight - minX, height: maxBottom - minY };
 }
 
+// Pure pixel extraction shared by every renderer/exporter below: crops
+// `source` to `bounds` and keeps only pixels whose original label is in
+// `memberIds`, everything else fully transparent. This is the one place
+// that decides "which real source pixels belong to this card" -- preview
+// rendering, PNG/JPG/SVG export all just consume the result differently.
+// A freshly allocated Uint8ClampedArray is always backed by a real
+// ArrayBuffer, never a SharedArrayBuffer -- this cast just tells the DOM
+// lib's generic ImageData constructor that, since TS can't infer it from
+// `new Uint8ClampedArray(n)` alone.
+export function toImageData(pixels: Uint8ClampedArray, width: number, height: number): ImageData {
+  return new ImageData(pixels as Uint8ClampedArray<ArrayBuffer>, width, height);
+}
+
+export function extractCardPixels(source: RasterSourceData, labels: Int32Array, bounds: Bounds, memberIds: ReadonlySet<number>): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(bounds.width * bounds.height * 4);
+  for (let localY = 0; localY < bounds.height; localY += 1) {
+    const sourceY = bounds.y + localY;
+    for (let localX = 0; localX < bounds.width; localX += 1) {
+      const sourceX = bounds.x + localX;
+      const outputOffset = (localY * bounds.width + localX) * 4;
+      if (sourceX >= source.width || sourceY >= source.height || sourceX < 0 || sourceY < 0) continue;
+      const sourcePixel = sourceY * source.width + sourceX;
+      const sourceOffset = sourcePixel * 4;
+      if (!memberIds.has(labels[sourcePixel])) continue;
+      data[outputOffset] = source.data[sourceOffset];
+      data[outputOffset + 1] = source.data[sourceOffset + 1];
+      data[outputOffset + 2] = source.data[sourceOffset + 2];
+      data[outputOffset + 3] = source.data[sourceOffset + 3];
+    }
+  }
+  return data;
+}
+
 // Renders the union of several original label ids into one transparent
 // canvas sized to their union bounds. Sibling of `renderElementPreview`
 // (which only ever tests membership against one id): this tests membership
@@ -539,33 +560,13 @@ export function computeUnionBounds(regions: Bounds[]): Bounds {
 // than one originally-detected region (and, for a merge of a merge, from
 // more than one merge).
 export async function renderCombinedPreview(source: RasterSourceData, labels: Int32Array, bounds: Bounds, memberIds: ReadonlySet<number>): Promise<string> {
+  const pixels = extractCardPixels(source, labels, bounds, memberIds);
   const canvas = document.createElement("canvas");
   canvas.width = bounds.width;
   canvas.height = bounds.height;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Canvas 2D context is unavailable.");
-  const output = context.createImageData(bounds.width, bounds.height);
-
-  for (let localY = 0; localY < bounds.height; localY += 1) {
-    const sourceY = bounds.y + localY;
-    for (let localX = 0; localX < bounds.width; localX += 1) {
-      const sourceX = bounds.x + localX;
-      const outputOffset = (localY * bounds.width + localX) * 4;
-      if (sourceX >= source.width || sourceY >= source.height || sourceX < 0 || sourceY < 0) {
-        output.data[outputOffset + 3] = 0;
-        continue;
-      }
-      const sourcePixel = sourceY * source.width + sourceX;
-      const sourceOffset = sourcePixel * 4;
-      const included = memberIds.has(labels[sourcePixel]);
-      output.data[outputOffset] = source.data[sourceOffset];
-      output.data[outputOffset + 1] = source.data[sourceOffset + 1];
-      output.data[outputOffset + 2] = source.data[sourceOffset + 2];
-      output.data[outputOffset + 3] = included ? source.data[sourceOffset + 3] : 0;
-    }
-  }
-
-  context.putImageData(output, 0, 0);
+  context.putImageData(toImageData(pixels, bounds.width, bounds.height), 0, 0);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Merged element preview rendering failed.");
   return URL.createObjectURL(blob);

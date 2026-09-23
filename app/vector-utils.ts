@@ -2443,6 +2443,21 @@ export async function downloadText(content: string, filename: string, type: stri
   return finishDownload(new Blob([content], { type }), filename, choice.handle);
 }
 
+// Shared save/download path (File System Access API, falling back to an
+// anchor-click download) for a Blob a caller already built -- e.g. Extract
+// Elements' per-card PNG/JPG export, which has no SVG string to hand
+// `downloadText`/`downloadPng`. Reuses the same `requestSaveHandle`/
+// `finishDownload` helpers those already call, so the save UX (and its
+// existing regression coverage) stays identical; this adds a path to it
+// for callers that already have a Blob, without changing either.
+export async function downloadBlob(blob: Blob, filename: string, description: string) {
+  const dot = filename.lastIndexOf(".");
+  const extension = dot >= 0 ? filename.slice(dot) : "";
+  const choice = await requestSaveHandle(filename, description, blob.type, extension);
+  if (choice.cancelled) return "cancelled" as const;
+  return finishDownload(blob, filename, choice.handle);
+}
+
 export async function downloadPng(svg: string, crop: CropBox, scale: number, filename: string) {
   const choice = await requestSaveHandle(filename, "PNG image", "image/png", ".png");
   if (choice.cancelled) return "cancelled" as const;

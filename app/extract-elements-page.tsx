@@ -21,6 +21,7 @@ import {
   buildInitialCards,
   collectMergedPreviewUrls,
   detectExtractElements,
+  isExportCandidate,
   planMerge,
   applyMerge,
   undoMerge as undoMergeInCards,
@@ -33,6 +34,16 @@ import {
   type ReviewCard,
   type UnsupportedReason,
 } from "./extract-elements-utils";
+import {
+  buildExportFilename,
+  exportCardAsJpgBlob,
+  exportCardAsPngBlob,
+  exportCardAsSvgString,
+  sanitizeFilenameBase,
+} from "./extract-elements-export";
+import { downloadBlob } from "./vector-utils";
+
+type ExportFormat = "png" | "jpg" | "svg";
 
 type Language = "en" | "ko";
 type UploadedImage = { file: File; url: string };
@@ -77,10 +88,15 @@ const copy = {
     emptyNameHint: "Name can't be empty.",
     unsupportedTitle: "Not suited for automatic separation",
     unsupportedMessage: "This image may not be suitable for automatic element extraction.\nTry an image with separated elements and a simple background.",
+    exportHint: "Select a card to enable its PNG, JPG, and SVG downloads below.",
+    exportPng: "Download PNG",
+    exportJpg: "Download JPG",
+    exportSvg: "Download SVG",
+    exportError: "Couldn't export this file. Try again.",
     nextTitle: "What comes next",
-    nextIntro: "The next development phase connects export and content-based filenames to this workspace.",
-    exportTitle: "Export only what you need",
-    exportText: "Choose PNG, JPG, SVG, or CSV, then download selected items or one ZIP.",
+    nextIntro: "The next development phase adds content-based filenames, keywords, CSV metadata, and a ZIP of everything at once.",
+    exportTitle: "Batch export, still to come",
+    exportText: "CSV metadata and a Download All ZIP for every selected asset at once.",
     filenameTitle: "English or Korean metadata",
     filenameText: "Generate editable filenames, titles, and keywords in your preferred language.",
     status: "Hidden development route · not linked from the live site",
@@ -126,10 +142,15 @@ const copy = {
     emptyNameHint: "이름을 비워둘 수 없습니다.",
     unsupportedTitle: "자동 분리에 적합하지 않음",
     unsupportedMessage: "이 이미지는 자동 요소 분리에 적합하지 않을 수 있습니다.\n요소가 서로 떨어져 있고 배경이 단순한 이미지를 사용해 주세요.",
+    exportHint: "카드를 선택하면 아래 PNG·JPG·SVG 다운로드가 활성화됩니다.",
+    exportPng: "PNG 다운로드",
+    exportJpg: "JPG 다운로드",
+    exportSvg: "SVG 다운로드",
+    exportError: "이 파일을 내보내지 못했습니다. 다시 시도해 주세요.",
     nextTitle: "다음 단계에서 할 일",
-    nextIntro: "다음 개발 단계에서 이 작업 공간에 내보내기와 콘텐츠 기반 파일명 기능을 연결합니다.",
-    exportTitle: "필요한 형식만 내보내기",
-    exportText: "PNG, JPG, SVG, CSV를 선택해 필요한 항목이나 전체 ZIP을 저장합니다.",
+    nextIntro: "다음 개발 단계에서는 콘텐츠 기반 파일명, 키워드, CSV 메타데이터, 한 번에 받는 ZIP을 추가합니다.",
+    exportTitle: "일괄 내보내기, 아직 준비 중",
+    exportText: "선택한 모든 에셋을 한 번에 받는 CSV 메타데이터와 전체 ZIP 다운로드가 다음에 추가됩니다.",
     filenameTitle: "영어 또는 한국어 메타데이터",
     filenameText: "선택한 언어로 파일명, 제목, 키워드를 만들고 직접 수정할 수 있습니다.",
     status: "숨김 개발 경로 · 운영 사이트에는 연결되지 않음",
@@ -152,12 +173,15 @@ export default function ExtractElementsPage() {
   const [unsupportedReason, setUnsupportedReason] = useState<UnsupportedReason | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState("");
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const [exportErrors, setExportErrors] = useState<Record<string, string>>({});
   const content = copy[language];
   const elementsRef = useRef<ExtractedElement[]>([]);
   const cardsRef = useRef<ReviewCard[]>([]);
   const sourceRef = useRef<RasterSourceData | null>(null);
   const labelsRef = useRef<Int32Array | null>(null);
   const nextMergedIdRef = useRef(100000);
+  const usedExportFilenamesRef = useRef<Set<string>>(new Set());
   elementsRef.current = elements;
   cardsRef.current = cards;
 
@@ -194,6 +218,8 @@ export default function ExtractElementsPage() {
     sourceRef.current = null;
     labelsRef.current = null;
     nextMergedIdRef.current = 100000;
+    usedExportFilenamesRef.current = new Set();
+    setExportErrors({});
     setDetecting(true);
     try {
       const outcome = await detectExtractElements(file);
@@ -284,6 +310,38 @@ export default function ExtractElementsPage() {
     setEditingId(null);
   };
 
+  const exportCard = async (card: ReviewCard, format: ExportFormat) => {
+    const source = sourceRef.current;
+    const labels = labelsRef.current;
+    if (!source || !labels || !isExportCandidate(card, selectedIds)) return;
+    const key = `${card.id}-${format}`;
+    setExportErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+    setExportingKey(key);
+    try {
+      const baseName = sanitizeFilenameBase(card.name);
+      if (format === "png") {
+        const blob = await exportCardAsPngBlob(source, labels, card);
+        const filename = buildExportFilename(baseName, "png", usedExportFilenamesRef.current);
+        const status = await downloadBlob(blob, filename, "PNG image");
+        if (status !== "cancelled") usedExportFilenamesRef.current.add(filename.toLowerCase());
+      } else if (format === "jpg") {
+        const blob = await exportCardAsJpgBlob(source, labels, card);
+        const filename = buildExportFilename(baseName, "jpg", usedExportFilenamesRef.current);
+        const status = await downloadBlob(blob, filename, "JPG image");
+        if (status !== "cancelled") usedExportFilenamesRef.current.add(filename.toLowerCase());
+      } else {
+        const svg = exportCardAsSvgString(source, labels, card);
+        const filename = buildExportFilename(baseName, "svg", usedExportFilenamesRef.current);
+        const status = await downloadBlob(new Blob([svg], { type: "image/svg+xml" }), filename, "SVG artwork");
+        if (status !== "cancelled") usedExportFilenamesRef.current.add(filename.toLowerCase());
+      }
+    } catch {
+      setExportErrors((current) => ({ ...current, [key]: content.exportError }));
+    } finally {
+      setExportingKey(null);
+    }
+  };
+
   const activeStepIndex = upload ? 1 : 0;
 
   return (
@@ -355,7 +413,7 @@ export default function ExtractElementsPage() {
             <article><span><FolderArchive size={19} /></span><div><h3>{content.exportTitle}</h3><p>{content.exportText}</p></div></article>
             <article><span><Languages size={19} /></span><div><h3>{content.filenameTitle}</h3><p>{content.filenameText}</p></div></article>
           </div>
-          <div className="extract-format-preview" aria-hidden="true"><span><Pencil size={15} />filename_01</span><span><Download size={15} />PNG</span><span>JPG</span><span>SVG</span><span>CSV</span></div>
+          <div className="extract-format-preview" aria-hidden="true"><span><FolderArchive size={15} />Download All (ZIP)</span><span>CSV</span></div>
         </aside>
       </section>
 
@@ -365,6 +423,7 @@ export default function ExtractElementsPage() {
             <div>
               <span>{content.reviewLabel}</span><h2>{content.reviewTitle}</h2><p>{content.reviewHint}</p>
               <p className="extract-review-limitation">{content.limitationNote}</p>
+              <p className="extract-review-limitation">{content.exportHint}</p>
             </div>
             {cards.length > 0 && (
               <div className="extract-review-controls">
@@ -437,6 +496,29 @@ export default function ExtractElementsPage() {
                     <button type="button" className="extract-element-exclude" onClick={() => toggleExcluded(card.id)}>
                       {card.excluded ? content.restore : content.exclude}
                     </button>
+
+                    <div className="extract-element-export-row">
+                      {(["png", "jpg", "svg"] as const).map((format) => {
+                        const key = `${card.id}-${format}`;
+                        const label = format === "png" ? content.exportPng : format === "jpg" ? content.exportJpg : content.exportSvg;
+                        return (
+                          <button
+                            key={format}
+                            type="button"
+                            disabled={!isExportCandidate(card, selectedIds) || exportingKey === key}
+                            aria-label={label}
+                            title={label}
+                            onClick={() => void exportCard(card, format)}
+                          >
+                            {exportingKey === key ? <Loader2 size={12} className="extract-spin" /> : <Download size={12} />}
+                            {format.toUpperCase()}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {exportErrors[`${card.id}-png`] || exportErrors[`${card.id}-jpg`] || exportErrors[`${card.id}-svg`] ? (
+                      <p className="extract-element-export-error">{content.exportError}</p>
+                    ) : null}
                   </article>
                 );
               })}

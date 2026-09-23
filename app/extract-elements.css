@@ -109,6 +109,11 @@
 .extract-element-merge-info button { display: inline-flex; align-items: center; gap: 3px; border: 0; background: transparent; color: var(--extract-green); cursor: pointer; font-size: 10.5px; font-weight: 800; }
 .extract-element-exclude { width: 100%; margin-top: 8px; padding: 6px; border: 1px solid #e4e6e1; border-radius: 7px; color: #65756d; background: #fafbf9; cursor: pointer; font-size: 11.5px; font-weight: 800; }
 .extract-element-exclude:hover { border-color: #cfd7d1; color: var(--extract-ink); }
+.extract-element-export-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; margin-top: 6px; }
+.extract-element-export-row button { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px 0; border: 1px solid var(--extract-line); border-radius: 7px; color: var(--extract-green-dark); background: #fff; cursor: pointer; font-size: 10.5px; font-weight: 850; }
+.extract-element-export-row button:hover:not(:disabled) { border-color: var(--extract-green); background: var(--extract-mint); }
+.extract-element-export-row button:disabled { color: #b7bfba; cursor: not-allowed; }
+.extract-element-export-error { margin: 6px 0 0; color: #a33c2b; font-size: 10.5px; font-weight: 700; text-align: center; }
 
 @media (max-width: 980px) {
   .extract-topbar { grid-template-columns: auto 1fr auto; }

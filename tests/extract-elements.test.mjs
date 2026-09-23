@@ -11,6 +11,7 @@ import {
   decodeImageFileToRasterSource,
   detectExtractElements,
   detectFastPathElements,
+  isExportCandidate,
   planMerge,
   renameCard,
   renderCombinedPreview,
@@ -19,6 +20,13 @@ import {
   undoMerge,
   validateExtractElementsFile,
 } from "../app/extract-elements-utils.ts";
+import {
+  buildExportFilename,
+  exportCardAsJpgBlob,
+  exportCardAsPngBlob,
+  exportCardAsSvgString,
+  sanitizeFilenameBase,
+} from "../app/extract-elements-export.ts";
 
 test("Extract Elements accepts the four advertised raster extensions", () => {
   for (const type of ["image/png", "image/jpeg", "image/webp"]) {
@@ -171,10 +179,19 @@ test("assessExtractionOutcome returns null for a healthy result", () => {
 });
 
 class TestImageData {
-  constructor(data, width, height) {
-    this.data = data;
-    this.width = width;
-    this.height = height ?? Math.floor(data.length / 4 / width);
+  // Supports both real ImageData constructor overloads: (width, height) for
+  // a blank buffer (used internally by vector-utils.ts's SVG pipeline) and
+  // (data, width, height) (used by every detection/export test in this file).
+  constructor(first, second, third) {
+    if (typeof first === "number") {
+      this.width = first;
+      this.height = second;
+      this.data = new Uint8ClampedArray(first * second * 4);
+    } else {
+      this.data = first;
+      this.width = second;
+      this.height = third ?? Math.floor(first.length / 4 / second);
+    }
   }
 }
 
@@ -531,4 +548,269 @@ test("an excluded card is not treated as an active export candidate", () => {
   const excluded = toggleCardExcluded(cards, 2);
   const exportCandidates = excluded.filter((card) => !card.excluded);
   assert.deepEqual(exportCandidates.map((card) => card.id), [1]);
+});
+
+// --- Phase E: PNG / JPG / SVG export -------------------------------------
+
+function parseRgb(style) {
+  const match = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(style ?? "");
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
+}
+
+// A canvas mock with real alpha compositing (unlike the simpler detection-
+// path mocks elsewhere in this file), because the JPG export test needs to
+// verify an actual composited white background, not just that some
+// function was called. A factory function returning a plain object (like
+// every other canvas mock in this codebase) rather than a class, so
+// `getContext()` can close over `canvas` without aliasing `this`.
+function createMockCanvas() {
+  const canvas = { width: 0, height: 0, pixels: new Uint8ClampedArray(0), fillStyle: "#000000" };
+  const ensureBuffer = () => {
+    const needed = canvas.width * canvas.height * 4;
+    if (canvas.pixels.length !== needed) canvas.pixels = new Uint8ClampedArray(needed);
+  };
+  canvas.getContext = () => ({
+    get fillStyle() { return canvas.fillStyle; },
+    set fillStyle(value) { canvas.fillStyle = value; },
+    fillRect(x, y, w, h) {
+      ensureBuffer();
+      const [r, g, b] = parseRgb(canvas.fillStyle);
+      for (let yy = y; yy < y + h; yy += 1) {
+        for (let xx = x; xx < x + w; xx += 1) {
+          const offset = (yy * canvas.width + xx) * 4;
+          canvas.pixels[offset] = r; canvas.pixels[offset + 1] = g; canvas.pixels[offset + 2] = b; canvas.pixels[offset + 3] = 255;
+        }
+      }
+    },
+    putImageData(imageData, dx = 0, dy = 0) {
+      ensureBuffer();
+      for (let yy = 0; yy < imageData.height; yy += 1) {
+        for (let xx = 0; xx < imageData.width; xx += 1) {
+          const dxp = dx + xx;
+          const dyp = dy + yy;
+          if (dxp < 0 || dyp < 0 || dxp >= canvas.width || dyp >= canvas.height) continue;
+          const sourceOffset = (yy * imageData.width + xx) * 4;
+          const destOffset = (dyp * canvas.width + dxp) * 4;
+          canvas.pixels[destOffset] = imageData.data[sourceOffset];
+          canvas.pixels[destOffset + 1] = imageData.data[sourceOffset + 1];
+          canvas.pixels[destOffset + 2] = imageData.data[sourceOffset + 2];
+          canvas.pixels[destOffset + 3] = imageData.data[sourceOffset + 3];
+        }
+      }
+    },
+    // Standard "source-over" alpha compositing, the same math a real
+    // canvas applies -- this is what actually puts the transparent crop
+    // onto the pre-filled JPG background.
+    drawImage(source, dx = 0, dy = 0) {
+      ensureBuffer();
+      for (let yy = 0; yy < source.height; yy += 1) {
+        for (let xx = 0; xx < source.width; xx += 1) {
+          const sourceOffset = (yy * source.width + xx) * 4;
+          const alpha = source.pixels[sourceOffset + 3] / 255;
+          const dxp = dx + xx;
+          const dyp = dy + yy;
+          if (dxp < 0 || dyp < 0 || dxp >= canvas.width || dyp >= canvas.height) continue;
+          const destOffset = (dyp * canvas.width + dxp) * 4;
+          canvas.pixels[destOffset] = Math.round(source.pixels[sourceOffset] * alpha + canvas.pixels[destOffset] * (1 - alpha));
+          canvas.pixels[destOffset + 1] = Math.round(source.pixels[sourceOffset + 1] * alpha + canvas.pixels[destOffset + 1] * (1 - alpha));
+          canvas.pixels[destOffset + 2] = Math.round(source.pixels[sourceOffset + 2] * alpha + canvas.pixels[destOffset + 2] * (1 - alpha));
+        }
+      }
+    },
+    createImageData(w, h) { return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h); },
+  });
+  canvas.toBlob = (callback, type, quality) => callback({ type, quality, width: canvas.width, height: canvas.height, pixels: canvas.pixels.slice() });
+  return canvas;
+}
+
+function installExportCanvasMocks() {
+  globalThis.ImageData = TestImageData;
+  globalThis.document = { createElement(name) { assert.equal(name, "canvas"); return createMockCanvas(); } };
+}
+
+test("exportCardAsPngBlob preserves transparency and reports correct dimensions", async () => {
+  installExportCanvasMocks();
+  const width = 20;
+  const height = 10;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  fillCircle(source, 5, 5, 4, [214, 40, 40], false);
+  const labels = new Int32Array(width * height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    if (source.data[pixel * 4] === 214) labels[pixel] = 1;
+  }
+  const card = makeCard(1, 0, 0, width, height, { sourceRegionIds: [1] });
+
+  const blob = await exportCardAsPngBlob(source, labels, card);
+  assert.equal(blob.type, "image/png");
+  assert.equal(blob.width, width);
+  assert.equal(blob.height, height);
+  const outside = ((0 * width) + 15) * 4; // far from the circle, not a member pixel
+  assert.equal(blob.pixels[outside + 3], 0, "non-member pixel must stay transparent in the PNG");
+  const inside = ((5 * width) + 5) * 4;
+  assert.equal(blob.pixels[inside + 3], 255, "member pixel keeps full opacity");
+});
+
+test("exportCardAsPngBlob exports a merged asset with its members' real transparency intact", async () => {
+  installExportCanvasMocks();
+  const width = 40;
+  const height = 10;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  fillCircle(source, 5, 5, 4, [214, 40, 40], false);
+  fillCircle(source, 35, 5, 4, [23, 138, 216], false);
+  const labels = new Int32Array(width * height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4;
+    if (source.data[offset] === 214) labels[pixel] = 1;
+    else if (source.data[offset + 2] === 216) labels[pixel] = 2;
+  }
+  const mergedCard = makeCard(999, 0, 0, width, height, { sourceRegionIds: [1, 2], mergedFrom: [] });
+
+  const blob = await exportCardAsPngBlob(source, labels, mergedCard);
+  const leftMember = ((5 * width) + 5) * 4;
+  const rightMember = ((5 * width) + 35) * 4;
+  const gap = ((5 * width) + 20) * 4;
+  assert.equal(blob.pixels[leftMember + 3], 255);
+  assert.equal(blob.pixels[rightMember + 3], 255);
+  assert.equal(blob.pixels[gap + 3], 0, "the real gap between merged members stays transparent");
+});
+
+test("an excluded or unselected card is not export-eligible, whatever format is requested", () => {
+  const card = makeCard(1, 0, 0, 10, 10);
+  assert.equal(isExportCandidate(card, new Set()), false, "not selected");
+  assert.equal(isExportCandidate({ ...card, excluded: true }, new Set([1])), false, "excluded");
+  assert.equal(isExportCandidate(card, new Set([1])), true, "selected and not excluded");
+});
+
+test("exportCardAsJpgBlob composites the transparent crop over a white background", async () => {
+  installExportCanvasMocks();
+  const width = 20;
+  const height = 10;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  fillCircle(source, 5, 5, 4, [214, 40, 40], false);
+  const labels = new Int32Array(width * height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    if (source.data[pixel * 4] === 214) labels[pixel] = 1;
+  }
+  const card = makeCard(1, 0, 0, width, height, { sourceRegionIds: [1] });
+
+  const blob = await exportCardAsJpgBlob(source, labels, card);
+  assert.equal(blob.type, "image/jpeg");
+  assert.equal(blob.width, width);
+  assert.equal(blob.height, height);
+  const outside = ((0 * width) + 15) * 4;
+  assert.deepEqual([blob.pixels[outside], blob.pixels[outside + 1], blob.pixels[outside + 2]], [255, 255, 255], "background fills in where the PNG would have been transparent");
+  const inside = ((5 * width) + 5) * 4;
+  assert.deepEqual([blob.pixels[inside], blob.pixels[inside + 1], blob.pixels[inside + 2]], [214, 40, 40], "the element's own color survives the composite");
+});
+
+// --- SVG export: reuses the real Image-to-SVG converter -------------------
+// This mock (drawImage with resampling, getImageData, toDataURL) mirrors
+// the one tests/vector-pipeline.test.mjs already uses to exercise
+// createVectorResult -- copied rather than imported so this file stays
+// runnable on its own, same as every other test file here.
+
+function createVectorUtilsCanvas() {
+  const canvas = { width: 0, height: 0, image: null };
+  canvas.getContext = () => ({
+    imageSmoothingEnabled: false,
+    putImageData(image) { canvas.image = image; },
+    drawImage(source, _x, _y, width, height) {
+      const output = new TestImageData(new Uint8ClampedArray(width * height * 4), width, height);
+      const input = source.image;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const sourceX = Math.min(input.width - 1, Math.floor(x * input.width / width));
+          const sourceY = Math.min(input.height - 1, Math.floor(y * input.height / height));
+          const sourceOffset = (sourceY * input.width + sourceX) * 4;
+          output.data.set(input.data.subarray(sourceOffset, sourceOffset + 4), (y * width + x) * 4);
+        }
+      }
+      canvas.image = output;
+    },
+    getImageData() { return canvas.image; },
+  });
+  canvas.toDataURL = () => "data:image/png;base64,";
+  return canvas;
+}
+
+function installVectorUtilsMocks() {
+  globalThis.ImageData = TestImageData;
+  globalThis.document = {
+    body: { appendChild() {} },
+    createElement(name) {
+      if (name === "a") return { href: "", download: "", target: "", rel: "", style: {}, click() {}, remove() {} };
+      assert.equal(name, "canvas");
+      return createVectorUtilsCanvas();
+    },
+  };
+}
+
+function buildSvgTestCard(width, height, memberColor) {
+  const source = buildRaster(width, height, () => [0, 0, 0, 0]);
+  fillCircle(source, width / 2, height / 2, Math.min(width, height) * 0.35, memberColor, true);
+  const labels = new Int32Array(width * height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    if (source.data[pixel * 4 + 3] > 0) labels[pixel] = 1;
+  }
+  return { source, labels, card: makeCard(1, 0, 0, width, height, { sourceRegionIds: [1] }) };
+}
+
+test("exportCardAsSvgString reuses the real Image-to-SVG converter, not a second engine", () => {
+  installVectorUtilsMocks();
+  const { source, labels, card } = buildSvgTestCard(48, 48, [214, 40, 40]);
+  const svg = exportCardAsSvgString(source, labels, card);
+  assert.match(svg, /^<svg /);
+  assert.match(svg, /data-vector-engine="imagetracer-regionfill-v9"/, "must be the same engine app/vector-utils.ts's Image-to-SVG flow uses, not a duplicate");
+  assert.match(svg, /<path /);
+});
+
+test("exportCardAsSvgString can vectorize a merged (multi-member) card", () => {
+  installVectorUtilsMocks();
+  const width = 60;
+  const height = 30;
+  const source = buildRaster(width, height, () => [0, 0, 0, 0]);
+  fillCircle(source, 15, 15, 10, [214, 40, 40], true);
+  fillCircle(source, 45, 15, 10, [23, 138, 216], true);
+  const labels = new Int32Array(width * height);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4;
+    if (source.data[offset + 3] === 0) continue;
+    labels[pixel] = source.data[offset] === 214 ? 1 : 2;
+  }
+  const mergedCard = makeCard(999, 0, 0, width, height, { sourceRegionIds: [1, 2], mergedFrom: [] });
+  const svg = exportCardAsSvgString(source, labels, mergedCard);
+  assert.match(svg, /^<svg /);
+  assert.match(svg, /<path /);
+});
+
+// --- Filename safety -------------------------------------------------------
+
+test("sanitizeFilenameBase strips forbidden characters and any existing extension", () => {
+  assert.equal(sanitizeFilenameBase("My Flower"), "My-Flower");
+  assert.equal(sanitizeFilenameBase("flower.png"), "flower");
+  const weird = "weird" + String.fromCharCode(58, 47) + "name" + String.fromCharCode(42, 63, 34, 60, 62, 124) + ".svg";
+  assert.equal(sanitizeFilenameBase(weird), "weird-name");
+});
+
+test("sanitizeFilenameBase falls back when the cleaned name is empty", () => {
+  assert.equal(sanitizeFilenameBase("   "), "element");
+  assert.equal(sanitizeFilenameBase("***", "fallback"), "fallback");
+});
+
+test("buildExportFilename numbers duplicates safely and never doubles the extension", () => {
+  const used = new Set();
+  const first = buildExportFilename("flower", "png", used);
+  used.add(first.toLowerCase());
+  const second = buildExportFilename("flower", "png", used);
+  used.add(second.toLowerCase());
+  const third = buildExportFilename("flower", "png", used);
+  assert.equal(first, "flower.png");
+  assert.equal(second, "flower-2.png");
+  assert.equal(third, "flower-3.png");
+  assert.ok(!third.includes(".png.png"));
+});
+
+test("buildExportFilename treats names case-insensitively, matching real filesystem behavior", () => {
+  const used = new Set(["flower.png"]);
+  assert.equal(buildExportFilename("Flower", "png", used), "Flower-2.png");
 });
