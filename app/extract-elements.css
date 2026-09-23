@@ -79,13 +79,14 @@
 .extract-review-heading > div > span { color: var(--extract-coral); font-size: 13px; line-height: 1; font-weight: 900; letter-spacing: .16em; }
 .extract-review-heading h2 { margin: 8px 0 6px; font-size: 22px; letter-spacing: -.02em; }
 .extract-review-heading p { margin: 0; max-width: 560px; color: var(--extract-muted); font-size: 14px; line-height: 1.55; }
+.extract-review-limitation { margin-top: 8px; color: #97906f; font-size: 12.5px; }
 .extract-review-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .extract-review-count { color: var(--extract-muted); font-size: 13px; font-weight: 800; }
 .extract-review-controls button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border: 1px solid #d9dfda; border-radius: 8px; color: #52645b; background: #fff; cursor: pointer; font-size: 13px; font-weight: 800; }
 .extract-review-controls button:hover { border-color: var(--extract-green); color: var(--extract-green); }
-.extract-empty-state { display: grid; place-items: center; gap: 8px; padding: 48px 20px; border: 1px dashed var(--extract-line); border-radius: 16px; color: var(--extract-muted); background: #fff; text-align: center; }
-.extract-empty-state strong { color: var(--extract-ink); font-size: 16px; }
-.extract-empty-state p { margin: 0; max-width: 420px; font-size: 14px; }
+.extract-unsupported-state { display: grid; place-items: center; gap: 8px; padding: 48px 20px; border: 1px solid #e4e0cf; border-radius: 16px; color: #8a8465; background: #fbf9f0; text-align: center; }
+.extract-unsupported-state strong { color: var(--extract-ink); font-size: 16px; }
+.extract-unsupported-state p { margin: 0; max-width: 420px; font-size: 14px; }
 .extract-element-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 14px; }
 .extract-element-card { position: relative; padding: 10px; border: 1px solid var(--extract-line); border-radius: 14px; background: #fff; box-shadow: 0 8px 22px rgba(34,52,45,.05); }
 .extract-element-card.selected { border-color: var(--extract-green); box-shadow: 0 8px 22px rgba(37,115,91,.14); }

@@ -14,7 +14,7 @@ import {
   RotateCcw,
   UploadCloud,
 } from "lucide-react";
-import { detectExtractElements, validateExtractElementsFile, type ExtractedElement } from "./extract-elements-utils";
+import { detectExtractElements, validateExtractElementsFile, type ExtractedElement, type UnsupportedReason } from "./extract-elements-utils";
 
 type Language = "en" | "ko";
 type UploadedImage = { file: File; url: string };
@@ -39,13 +39,14 @@ const copy = {
     detectionError: "Couldn't detect elements in that image. Try a different file.",
     reviewLabel: "STEP 2",
     reviewTitle: "Review detected elements",
-    reviewHint: "This early fast-path detector works best on flat artwork with a transparent, white, or near-white background.",
+    reviewHint: "This early fast-path detector works best on flat artwork with a transparent, white, off-white, or cream background.",
+    limitationNote: "Known limitation: elements that touch or overlap may be merged into one, and an overlapping object can't yet be split back into separate complete shapes.",
     selectAll: "Select all",
     deselectAll: "Deselect all",
     selectedCount: (selected: number, total: number) => `${selected} / ${total} selected`,
     elementLabel: "Element",
-    noElementsTitle: "No separate elements found",
-    noElementsText: "Try an image with a plain white or transparent background around each shape.",
+    unsupportedTitle: "Not suited for automatic separation",
+    unsupportedMessage: "This image may not be suitable for automatic element extraction.\nTry an image with separated elements and a simple background.",
     nextTitle: "What comes next",
     nextIntro: "The next development phase connects export and content-based filenames to this workspace.",
     exportTitle: "Export only what you need",
@@ -75,13 +76,14 @@ const copy = {
     detectionError: "이 이미지에서 요소를 감지하지 못했습니다. 다른 파일을 시도해 주세요.",
     reviewLabel: "2단계",
     reviewTitle: "감지된 요소 확인",
-    reviewHint: "이 초기 감지 기능은 투명하거나 흰색·거의 흰색 배경의 단순한 이미지에서 가장 잘 작동합니다.",
+    reviewHint: "이 초기 감지 기능은 투명하거나 흰색·오프화이트·크림색 배경의 단순한 이미지에서 가장 잘 작동합니다.",
+    limitationNote: "알려진 한계: 서로 닿거나 겹치는 요소는 하나로 합쳐질 수 있으며, 겹친 오브젝트는 아직 완전한 개별 도형으로 다시 분리할 수 없습니다.",
     selectAll: "전체 선택",
     deselectAll: "전체 해제",
     selectedCount: (selected: number, total: number) => `${selected} / ${total}개 선택됨`,
     elementLabel: "요소",
-    noElementsTitle: "분리된 요소를 찾지 못했습니다",
-    noElementsText: "각 모양 주위에 흰색이나 투명한 배경이 있는 이미지를 사용해 보세요.",
+    unsupportedTitle: "자동 분리에 적합하지 않음",
+    unsupportedMessage: "이 이미지는 자동 요소 분리에 적합하지 않을 수 있습니다.\n요소가 서로 떨어져 있고 배경이 단순한 이미지를 사용해 주세요.",
     nextTitle: "다음 단계에서 할 일",
     nextIntro: "다음 개발 단계에서 이 작업 공간에 내보내기와 콘텐츠 기반 파일명 기능을 연결합니다.",
     exportTitle: "필요한 형식만 내보내기",
@@ -104,6 +106,7 @@ export default function ExtractElementsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [detecting, setDetecting] = useState(false);
   const [detectionError, setDetectionError] = useState("");
+  const [unsupportedReason, setUnsupportedReason] = useState<UnsupportedReason | null>(null);
   const content = copy[language];
   const elementsRef = useRef<ExtractedElement[]>([]);
   elementsRef.current = elements;
@@ -133,11 +136,16 @@ export default function ExtractElementsPage() {
     setElements([]);
     setSelectedIds(new Set());
     setDetectionError("");
+    setUnsupportedReason(null);
     setDetecting(true);
     try {
-      const detected = await detectExtractElements(file);
-      setElements(detected);
-      setSelectedIds(new Set(detected.map((element) => element.id)));
+      const outcome = await detectExtractElements(file);
+      if (outcome.status === "unsupported") {
+        setUnsupportedReason(outcome.reason);
+      } else {
+        setElements(outcome.elements);
+        setSelectedIds(new Set(outcome.elements.map((element) => element.id)));
+      }
     } catch {
       setDetectionError(content.detectionError);
     } finally {
@@ -245,7 +253,10 @@ export default function ExtractElementsPage() {
       {upload && !detecting && (
         <section className="extract-review">
           <div className="extract-review-heading">
-            <div><span>{content.reviewLabel}</span><h2>{content.reviewTitle}</h2><p>{content.reviewHint}</p></div>
+            <div>
+              <span>{content.reviewLabel}</span><h2>{content.reviewTitle}</h2><p>{content.reviewHint}</p>
+              <p className="extract-review-limitation">{content.limitationNote}</p>
+            </div>
             {elements.length > 0 && (
               <div className="extract-review-controls">
                 <span className="extract-review-count">{content.selectedCount(selectedIds.size, elements.length)}</span>
@@ -257,8 +268,12 @@ export default function ExtractElementsPage() {
 
           {detectionError ? (
             <p className="extract-error" role="alert">{detectionError}</p>
-          ) : elements.length === 0 ? (
-            <div className="extract-empty-state"><ImageOff size={22} /><strong>{content.noElementsTitle}</strong><p>{content.noElementsText}</p></div>
+          ) : unsupportedReason || elements.length === 0 ? (
+            <div className="extract-unsupported-state" role="status">
+              <ImageOff size={22} />
+              <strong>{content.unsupportedTitle}</strong>
+              {content.unsupportedMessage.split("\n").map((line) => <p key={line}>{line}</p>)}
+            </div>
           ) : (
             <div className="extract-element-grid" role="list">
               {elements.map((element, index) => {

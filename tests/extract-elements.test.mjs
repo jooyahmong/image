@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EXTRACT_ELEMENTS_MAX_FILE_SIZE,
+  assessExtractionOutcome,
   computeForegroundMask,
   decodeImageFileToRasterSource,
   detectExtractElements,
@@ -35,6 +36,26 @@ function buildRaster(width, height, fill) {
   return { width, height, data };
 }
 
+function fillCircle(raster, cx, cy, r, [cr, cg, cb], alphaBackground) {
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2) - r;
+      if (d > 0.5) continue;
+      const cov = d <= -0.5 ? 1 : 0.5 - d;
+      const p = (y * raster.width + x) * 4;
+      if (alphaBackground) {
+        raster.data[p] = cr; raster.data[p + 1] = cg; raster.data[p + 2] = cb;
+        raster.data[p + 3] = Math.round(cov * 255);
+      } else {
+        raster.data[p] = Math.round(cr * cov + raster.data[p] * (1 - cov));
+        raster.data[p + 1] = Math.round(cg * cov + raster.data[p + 1] * (1 - cov));
+        raster.data[p + 2] = Math.round(cb * cov + raster.data[p + 2] * (1 - cov));
+        raster.data[p + 3] = 255;
+      }
+    }
+  }
+}
+
 test("computeForegroundMask prefers real alpha transparency when present", () => {
   const raster = buildRaster(4, 4, (x) => (x < 2 ? [10, 10, 10, 255] : [0, 0, 0, 0]));
   const { mask, backgroundMode } = computeForegroundMask(raster.width, raster.height, raster.data);
@@ -47,7 +68,7 @@ test("computeForegroundMask prefers real alpha transparency when present", () =>
   }
 });
 
-test("computeForegroundMask floods near-white background from the border but keeps an enclosed white highlight", () => {
+test("computeForegroundMask estimates the background from the border and keeps an enclosed white highlight", () => {
   // 7x7 opaque image: a dark ring with a white pixel sealed in the center.
   const raster = buildRaster(7, 7, (x, y) => {
     if (x === 3 && y === 3) return [252, 252, 252, 255];
@@ -55,11 +76,28 @@ test("computeForegroundMask floods near-white background from the border but kee
     return onRing ? [20, 20, 20, 255] : [255, 255, 255, 255];
   });
   const { mask, backgroundMode } = computeForegroundMask(raster.width, raster.height, raster.data);
-  assert.equal(backgroundMode, "near-white");
+  assert.equal(backgroundMode, "near-uniform");
   assert.equal(mask[0 * 7 + 0], 0, "border white pixel is background");
   assert.equal(mask[3 * 7 + 3], 1, "white pixel sealed inside the dark ring stays foreground");
   assert.equal(mask[2 * 7 + 3], 1, "ring pixel is foreground");
 });
+
+for (const [name, color] of [
+  ["pure white", [255, 255, 255]],
+  ["off-white", [250, 250, 248]],
+  ["cream", [250, 247, 238]],
+  ["light beige", [245, 238, 222]],
+]) {
+  test(`computeForegroundMask treats a ${name} background as background, whatever shade it is`, () => {
+    const raster = buildRaster(30, 30, () => [...color, 255]);
+    fillCircle(raster, 15, 15, 8, [40, 90, 200], false);
+    const { mask, backgroundMode, background } = computeForegroundMask(raster.width, raster.height, raster.data);
+    assert.equal(backgroundMode, "near-uniform");
+    assert.ok(background.confidence > 0.9, `expected high confidence, got ${background.confidence}`);
+    assert.equal(mask[0], 0, "corner pixel is background");
+    assert.equal(mask[15 * 30 + 15], 1, "circle center is foreground");
+  });
+}
 
 test("detectFastPathElements separates two shapes and reports padded bounds", () => {
   const width = 12;
@@ -103,6 +141,26 @@ test("detectFastPathElements caps how many elements it returns", () => {
   assert.ok(regions.length <= 40);
 });
 
+test("assessExtractionOutcome flags low background confidence", () => {
+  const reason = assessExtractionOutcome(100, 100, "near-uniform", { color: [255, 255, 255], confidence: 0.3 }, [{ id: 1, x: 0, y: 0, width: 10, height: 10, area: 100 }]);
+  assert.equal(reason, "low-background-confidence");
+});
+
+test("assessExtractionOutcome flags a single component spanning almost the whole canvas", () => {
+  const reason = assessExtractionOutcome(100, 100, "near-uniform", { color: [250, 247, 238], confidence: 0.95 }, [{ id: 1, x: 0, y: 0, width: 100, height: 100, area: 9600 }]);
+  assert.equal(reason, "background-not-separated");
+});
+
+test("assessExtractionOutcome flags zero detected elements", () => {
+  const reason = assessExtractionOutcome(100, 100, "alpha", { color: [0, 0, 0], confidence: 1 }, []);
+  assert.equal(reason, "no-elements-found");
+});
+
+test("assessExtractionOutcome returns null for a healthy result", () => {
+  const reason = assessExtractionOutcome(100, 100, "near-uniform", { color: [255, 255, 255], confidence: 0.98 }, [{ id: 1, x: 10, y: 10, width: 20, height: 20, area: 300 }]);
+  assert.equal(reason, null);
+});
+
 class TestImageData {
   constructor(data, width, height) {
     this.data = data;
@@ -113,12 +171,8 @@ class TestImageData {
 
 function installCanvasMocks() {
   globalThis.ImageData = TestImageData;
-  const revoked = [];
-  globalThis.URL.createObjectURL = (blob) => {
-    blob.__url = `blob:${Math.random().toString(36).slice(2)}`;
-    return blob.__url;
-  };
-  globalThis.URL.revokeObjectURL = (url) => revoked.push(url);
+  globalThis.URL.createObjectURL = (blob) => { blob.__url = `blob:${Math.random().toString(36).slice(2)}`; return blob.__url; };
+  globalThis.URL.revokeObjectURL = () => {};
   globalThis.document = {
     createElement(name) {
       assert.equal(name, "canvas");
@@ -133,12 +187,39 @@ function installCanvasMocks() {
             putImageData(image) { canvas.__putImage = image; },
           };
         },
-        toBlob(callback) { callback({ __size: canvas.width * canvas.height, type: "image/png" }); },
+        toBlob(callback) { callback({ type: "image/png" }); },
       };
       return canvas;
     },
   };
-  return { revoked };
+}
+
+async function detectOnSynthetic(source) {
+  installCanvasMocks();
+  const bitmap = { width: source.width, height: source.height, close() {} };
+  globalThis.createImageBitmap = async () => bitmap;
+  globalThis.document.createElement = (name) => {
+    assert.equal(name, "canvas");
+    const canvas = {
+      width: 0,
+      height: 0,
+      __sourceImageData: new TestImageData(source.data, source.width, source.height),
+      getContext() {
+        return {
+          drawImage() {},
+          getImageData(_x, _y, w, h) {
+            if (w === source.width && h === source.height) return canvas.__sourceImageData;
+            return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h);
+          },
+          createImageData(w, h) { return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h); },
+          putImageData(image) { canvas.__putImage = image; },
+        };
+      },
+      toBlob(callback) { callback({ type: "image/png" }); },
+    };
+    return canvas;
+  };
+  return detectExtractElements({});
 }
 
 test("decodeImageFileToRasterSource draws the bitmap and reads back its pixels", async () => {
@@ -165,40 +246,110 @@ test("renderElementPreview keeps included pixels and zeroes everything else", as
   assert.match(url, /^blob:/);
 });
 
-test("detectExtractElements runs the full pipeline end to end on a synthetic image", async () => {
-  installCanvasMocks();
+test("detectExtractElements finds a well-separated element on a large white canvas", async () => {
   const width = 40;
   const height = 40;
   const source = buildRaster(width, height, (x, y) => {
     const inShape = x >= 10 && x <= 15 && y >= 10 && y <= 15;
     return inShape ? [10, 120, 60, 255] : [255, 255, 255, 255];
   });
-  const bitmap = { width, height, close() {} };
-  globalThis.createImageBitmap = async () => bitmap;
-  globalThis.document.createElement = (name) => {
-    assert.equal(name, "canvas");
-    const canvas = {
-      width: 0,
-      height: 0,
-      __sourceImageData: new TestImageData(source.data, width, height),
-      getContext() {
-        return {
-          drawImage() {},
-          getImageData(_x, _y, w, h) {
-            if (w === width && h === height) return canvas.__sourceImageData;
-            return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h);
-          },
-          createImageData(w, h) { return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h); },
-          putImageData(image) { canvas.__putImage = image; },
-        };
-      },
-      toBlob(callback) { callback({ type: "image/png" }); },
-    };
-    return canvas;
-  };
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 1);
+  assert.ok(outcome.elements[0].previewUrl.startsWith("blob:"));
+  assert.equal(outcome.elements[0].area, 36);
+});
 
-  const elements = await detectExtractElements({});
-  assert.equal(elements.length, 1);
-  assert.ok(elements[0].previewUrl.startsWith("blob:"));
-  assert.equal(elements[0].area, 36);
+test("detectExtractElements finds exactly 3 elements on a cream background", async () => {
+  const width = 90;
+  const height = 60;
+  const source = buildRaster(width, height, () => [250, 247, 238, 255]);
+  fillCircle(source, 20, 20, 9, [214, 40, 40], false);
+  fillCircle(source, 55, 18, 9, [67, 170, 139], false);
+  fillCircle(source, 40, 45, 9, [23, 138, 216], false);
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 3);
+});
+
+test("detectExtractElements keeps a pale/pastel foreground shape on a cream background, does not delete it as background", async () => {
+  const width = 60;
+  const height = 60;
+  const source = buildRaster(width, height, () => [250, 247, 238, 255]);
+  fillCircle(source, 30, 30, 14, [255, 214, 224], false); // soft pastel pink, distinct from the cream background
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 1);
+  assert.ok(outcome.elements[0].area > 400, `pastel shape should survive as a real element, area was ${outcome.elements[0]?.area}`);
+});
+
+test("detectExtractElements reports the enclosed highlight as part of the same element, not separately", async () => {
+  const width = 40;
+  const height = 40;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  fillCircle(source, 20, 20, 14, [30, 30, 30, 255], false);
+  fillCircle(source, 20, 20, 4, [252, 252, 250, 255], false); // enclosed near-white highlight
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 1);
+});
+
+test("detectExtractElements returns an unsupported outcome for a non-uniform, photo-like background", async () => {
+  const width = 60;
+  const height = 60;
+  const source = buildRaster(width, height, (x, y) => {
+    // Wide, noisy variation across the border with no single dominant color.
+    const r = (x * 53 + y * 17) % 256;
+    const g = (x * 31 + y * 71) % 256;
+    const b = (x * 97 + y * 13) % 256;
+    return [r, g, b, 255];
+  });
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "unsupported");
+  assert.equal(outcome.reason, "low-background-confidence");
+});
+
+test("detectExtractElements returns an unsupported outcome when background separation collapses to one giant component", async () => {
+  // The exact shape of the Phase C.5 cream-background failure: a background
+  // color estimation that (for whatever reason) never matches the border.
+  const width = 50;
+  const height = 50;
+  const source = buildRaster(width, height, () => [250, 247, 238, 255]);
+  // Poison every border pixel so the dominant bucket never reaches the
+  // confidence floor, forcing the "whole image is one component" collapse
+  // this check exists to catch.
+  for (let x = 0; x < width; x += 1) {
+    source.data[x * 4] = (x * 41) % 256;
+    source.data[((height - 1) * width + x) * 4 + 1] = (x * 67) % 256;
+  }
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "unsupported");
+});
+
+test("detectExtractElements keeps merging touching elements into one -- documented Fast Path limitation, not fixed here", async () => {
+  const width = 60;
+  const height = 40;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  fillCircle(source, 24, 20, 12, [214, 40, 40], false);
+  fillCircle(source, 48, 20, 12, [23, 138, 216], false); // centers 24px apart, radii 12 each -> touching
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 1, "touching elements are still expected to merge");
+});
+
+test("detectExtractElements regression: 12 well-separated elements on a large (3-megapixel-class) canvas", async () => {
+  const width = 800;
+  const height = 600;
+  const source = buildRaster(width, height, () => [255, 255, 255, 255]);
+  const colors = [[214, 40, 40], [67, 170, 139], [95, 66, 122], [23, 138, 216], [244, 162, 97], [138, 89, 227]];
+  let index = 0;
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 4; col += 1) {
+      fillCircle(source, 90 + col * 190, 100 + row * 190, 55, colors[index % colors.length], false);
+      index += 1;
+    }
+  }
+  const outcome = await detectOnSynthetic(source);
+  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.elements.length, 12);
 });

@@ -18,6 +18,23 @@ Turn one uploaded image into a reviewable set of individually exportable creativ
 - Do not assume text must always become an image asset.
 - Keep text and background inclusion/exclusion separable so options can be added later.
 
+### Official Fast Path limitation: touching / overlapping elements
+
+Confirmed in Phase C.5/C.6 QA and not planned to be solved by the current
+connectivity-based Fast Path:
+
+- Elements that touch or overlap may be detected and returned as a single
+  merged element instead of separate ones.
+- An overlapping object cannot be reconstructed as separate, complete
+  shapes -- there is no attempt to guess the hidden part of an occluded
+  element.
+
+This is a structural limit of 8-connected component detection, not a bug to
+be tuned away, and is not something adding an AI model would fix on its own
+either (a real segmentation/completion model is a separate, larger
+capability -- see `docs/ELEMENT_DETECTION_SPIKE.md`). It is surfaced to the
+user as a standing note in the Review step, not just in this document.
+
 ## C. Review
 
 - Thumbnail grid.
