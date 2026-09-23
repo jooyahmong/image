@@ -127,28 +127,79 @@ This planning pass, recorded in full in `docs/SMART_EXTRACT.md`:
   ("Quick Extract" / "Smart Extract (Beta)" as two distinct entry points)
   is described in `docs/SMART_EXTRACT.md` §12 but not built.
 
+## Smart Extract — Feasibility Spike (docs only, `docs/SMART_EXTRACT_SPIKE.md`, not committed yet)
+
+Attempted to install `onnxruntime-node` and run 1-2 candidate models
+against synthetic overlapping-artwork images in an isolated scratchpad
+project (outside this repo). The runtime installed cleanly. **Getting an
+actual model file did not work**: `huggingface.co` (and its `hf.co`
+short-domain redirect, and an `hf-mirror.com` proxy that itself redirected
+back into the block) was unreachable from this environment on every
+attempt across two different HTTP clients, while `github.com`,
+`registry.npmjs.org`, and `cdn.jsdelivr.net` were all fine. No complete
+SAM-family ONNX file could be obtained; a GitHub-hosted MobileSAM mirror
+only had the decoder, not the encoder. Treated as a spike-environment
+limitation, not a claim about real users' browsers -- but flagged as a
+real operational risk (§0/§5/§8 of the spike doc) for whatever eventually
+lazy-loads a model in production.
+
+Given that, delivered a rigorous, cited desk comparison instead of a
+personally-run benchmark:
+
+- Compared SAM, SAM2 (hiera-tiny), MobileSAM, FastSAM-S, and (flagged,
+  less vetted) EfficientSAM on size, license (all Apache 2.0 except
+  EfficientSAM's varies by checkpoint), browser/WebGPU/WASM feasibility,
+  and -- critically -- **automatic "everything" mode support**.
+  **FastSAM-S (47.3 MB, single file) is the only candidate with a native
+  automatic mode**; the whole SAM family is prompt-native (point/box) by
+  design, not just missing a feature.
+- Key synthesis: FastSAM's automatic mode and SAM2/MobileSAM's prompt
+  design aren't competitors -- they map to the two stages of the
+  semi-automatic flow the task itself sketched (auto-generate candidates,
+  then click to refine one).
+- Recommended V1 UX: Quick Extract stays default; Smart Extract is a
+  separate opt-in beta running automatic candidates first, then
+  prompt-based user refinement, never presenting unreviewed automatic
+  masks as final assets (accuracy on this product's actual flat/decorative
+  art is still unproven by any source found).
+- Local-only is plausible for FastSAM-S/MobileSAM specifically, not for
+  full SAM/SAM2; a server is not proven necessary but not ruled out either
+  -- conditional on real-template accuracy testing that this spike could
+  not run.
+- No model integrated into the app. No accuracy numbers exist yet -- the
+  next step is getting one real model file running against real
+  (non-synthetic) overlapping template images, in an environment that can
+  actually reach the model host.
+
 ## Next
 
-1. Real-user QA per Phase C.5/C.6 instructions: run at least 3 real
+1. Get sign-off on this spike's findings before deciding whether to commit
+   `docs/SMART_EXTRACT_SPIKE.md` (per instruction, not committed yet).
+2. Whoever continues this needs model access first, not a model choice --
+   get one real SAM-family/FastSAM ONNX file loading in an environment
+   that can reach Hugging Face (or a confirmed-reachable mirror), then run
+   it against 3-5 real overlapping template images per
+   `docs/SMART_EXTRACT_SPIKE.md` §7.
+3. Real-user QA per Phase C.5/C.6 instructions: run at least 3 real
    templates through `/extract-elements` before calling Quick Extract
    production-ready -- (A) a white/transparent asset sheet, (B) a
    cream/pastel-background asset sheet, (C) a template with some elements
    close together or overlapping. Synthetic QA only goes so far, and this
    is also the same evidence Smart Extract's §11 step 1 needs.
-2. Per `docs/SMART_EXTRACT.md` §11: feasibility-spike a real segmentation
+4. Per `docs/SMART_EXTRACT.md` §11: feasibility-spike a real segmentation
    model against real template images (not natural-photo benchmarks)
    before committing to local, server, or hybrid for Smart Extract.
-3. Phase D: add rename and exclude/remove to the existing element cards
+5. Phase D: add rename and exclude/remove to the existing element cards
    (select-all/deselect-all and individual selection are already done).
-4. Phase E: reuse the existing SVG engine for extracted SVG assets and add
+6. Phase E: reuse the existing SVG engine for extracted SVG assets and add
    PNG/JPG export.
-5. Decide the semantic-metadata architecture before Phase F filenames and
+7. Decide the semantic-metadata architecture before Phase F filenames and
    Phase G keywords — current cards use placeholder names ("Element 1" /
    "요소 1").
-6. AI-assisted detection for Quick Extract itself is still not required
+8. AI-assisted detection for Quick Extract itself is still not required
    (see `docs/ELEMENT_DETECTION_SPIKE.md`); Smart Extract is the separate,
    deliberate path for the overlapping-template need instead.
-7. Keep the route hidden until Phases C–J pass end to end and navigation
+9. Keep the route hidden until Phases C–J pass end to end and navigation
    exposure is explicitly approved.
 
 ## Release Safety
