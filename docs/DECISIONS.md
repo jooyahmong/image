@@ -1,0 +1,23 @@
+# Confirmed Decisions
+
+- WOOJOO Image is the unified product.
+- Existing Image-to-SVG stays.
+- Extract Elements belongs inside WOOJOO Image.
+- WOOJOO Stock functions will be gradually integrated into WOOJOO Image.
+- V1 starts with image upload, not image generation.
+- Extracted asset formats are PNG, JPG, and SVG.
+- SVG export must reuse the existing WOOJOO Image SVG conversion logic where possible.
+- Filename language can be English or Korean.
+- Filenames should be generated from the detected image content.
+- Duplicate filenames must receive automatic numbering.
+- Metadata CSV export is supported.
+- Keyword language can be English or Korean.
+- Download Selected and Download All ZIP are required.
+- V1 is free.
+- Monetisation in V1 is optional coffee donation only.
+- Do not introduce subscriptions or credits in V1.
+- StockFactory may be used as a UX reference only. Do not copy its design.
+- WOOJOO Image uses a simpler Upload → Review → Export flow.
+- Image generation is postponed.
+- WOOJOO Image is a live production site. New features remain unlinked and hidden until end-to-end testing is complete.
+- Navigation exposure is the final release step and requires explicit approval.

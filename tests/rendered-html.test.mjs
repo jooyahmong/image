@@ -97,3 +97,21 @@ test("original preview explains favicon export and labels the export button for 
   assert.match(page, /isOriginalExport \? \(korean \? "원본 파비콘 저장 \(\.ico\)" : "Save original favicon \(\.ico\)"\) : \(korean \? "자르기 및 내보내기" : "Final crop & export"\)/);
   assert.match(styles, /\.original-favicon-hint\s*\{[^}]*margin:\s*0;[^}]*padding:\s*6px 16px;[^}]*font-size:\s*12px/);
 });
+
+test("keeps Extract Elements on an isolated unlinked development route", () => {
+  const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
+  const extractPage = readFileSync(new URL("../app/extract-elements-page.tsx", import.meta.url), "utf8");
+  const extractUtils = readFileSync(new URL("../app/extract-elements-utils.ts", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const landing = readFileSync(new URL("../app/landing-page.tsx", import.meta.url), "utf8");
+
+  assert.match(main, /pathname === "\/extract-elements"/);
+  assert.match(main, /<ExtractElementsPage \/>/);
+  assert.match(extractPage, /Separate one image into reusable assets\./);
+  assert.match(extractPage, /한 장의 이미지에서 재사용할 요소를 분리하세요\./);
+  assert.match(extractPage, /image\/png,image\/jpeg,image\/webp/);
+  assert.match(extractUtils, /EXTRACT_ELEMENTS_MAX_FILE_SIZE = 10 \* 1024 \* 1024/);
+  assert.match(extractPage, /Hidden development route · not linked from the live site/);
+  assert.doesNotMatch(editor, /\/extract-elements/);
+  assert.doesNotMatch(landing, /\/extract-elements/);
+});
