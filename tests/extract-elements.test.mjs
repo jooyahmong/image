@@ -2,12 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EXTRACT_ELEMENTS_MAX_FILE_SIZE,
+  applyMerge,
   assessExtractionOutcome,
+  buildInitialCards,
+  collectMergedPreviewUrls,
   computeForegroundMask,
+  computeUnionBounds,
   decodeImageFileToRasterSource,
   detectExtractElements,
   detectFastPathElements,
+  planMerge,
+  renameCard,
+  renderCombinedPreview,
   renderElementPreview,
+  toggleCardExcluded,
+  undoMerge,
   validateExtractElementsFile,
 } from "../app/extract-elements-utils.ts";
 
@@ -352,4 +361,174 @@ test("detectExtractElements regression: 12 well-separated elements on a large (3
   const outcome = await detectOnSynthetic(source);
   assert.equal(outcome.status, "ok");
   assert.equal(outcome.elements.length, 12);
+});
+
+// --- Phase D: Review editing (merge / undo / reset / rename / exclude) ---
+
+function makeCard(id, x, y, width, height, extra = {}) {
+  return { id, x, y, width, height, area: width * height, previewUrl: `blob:card-${id}`, name: `Element ${id}`, excluded: false, sourceRegionIds: [id], mergedFrom: null, ...extra };
+}
+
+test("planMerge is disabled with fewer than 2 selected", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10), makeCard(2, 20, 20, 10, 10)];
+  assert.equal(planMerge(cards, new Set([1])), null);
+  assert.equal(planMerge(cards, new Set()), null);
+});
+
+test("merging 2 elements computes the correct union bounding box", () => {
+  const cards = [makeCard(1, 10, 10, 20, 20), makeCard(2, 50, 5, 15, 30)];
+  const plan = planMerge(cards, new Set([1, 2]));
+  assert.deepEqual(plan.bounds, { x: 10, y: 5, width: 55, height: 30 });
+  assert.deepEqual([...plan.memberIds].sort(), [1, 2]);
+});
+
+test("merging 3 elements computes the correct union bounding box and sums area", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10), makeCard(2, 40, 0, 10, 10), makeCard(3, 20, 30, 10, 10)];
+  const plan = planMerge(cards, new Set([1, 2, 3]));
+  assert.deepEqual(plan.bounds, { x: 0, y: 0, width: 50, height: 40 });
+  const merged = applyMerge(cards, plan.members, 999, "blob:merged", "Merged element");
+  const mergedCard = merged.find((card) => card.id === 999);
+  assert.equal(mergedCard.area, 300); // 3 disjoint 10x10 regions, summed exactly
+});
+
+test("computeUnionBounds matches planMerge's bounds for the same members", () => {
+  const members = [makeCard(1, 5, 5, 10, 10), makeCard(2, 30, 2, 8, 8)];
+  assert.deepEqual(computeUnionBounds(members), { x: 5, y: 2, width: 33, height: 13 });
+});
+
+test("applyMerge replaces the members with one merged card in their place, selectable like any other", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10), makeCard(2, 20, 0, 10, 10), makeCard(3, 40, 0, 10, 10)];
+  const merged = applyMerge(cards, [cards[0], cards[1]], 999, "blob:merged", "Merged element");
+  assert.deepEqual(merged.map((card) => card.id), [999, 3]);
+  const mergedCard = merged[0];
+  assert.equal(mergedCard.mergedFrom.length, 2);
+  assert.equal(mergedCard.name, "Merged element");
+  // A merged card is a plain ReviewCard -- nothing marks it unselectable.
+  assert.equal(typeof mergedCard.id, "number");
+  assert.equal(mergedCard.excluded, false);
+});
+
+test("undoMerge restores the original members and removing it is a no-op for a non-merged card", () => {
+  const a = makeCard(1, 0, 0, 10, 10);
+  const b = makeCard(2, 20, 0, 10, 10);
+  const merged = applyMerge([a, b], [a, b], 999, "blob:merged", "Merged element");
+  const restored = undoMerge(merged, 999);
+  assert.deepEqual(restored.map((card) => card.id), [1, 2]);
+
+  const unaffected = undoMerge([a, b], 1); // id 1 isn't a merged card
+  assert.deepEqual(unaffected, [a, b]);
+});
+
+test("reset restores the original detection result via buildInitialCards", () => {
+  const elements = [
+    { id: 1, x: 0, y: 0, width: 10, height: 10, area: 100, previewUrl: "blob:1" },
+    { id: 2, x: 20, y: 0, width: 10, height: 10, area: 100, previewUrl: "blob:2" },
+  ];
+  const initial = buildInitialCards(elements, "Element");
+  const merged = applyMerge(initial, initial, 999, "blob:merged", "Merged element");
+  assert.equal(merged.length, 1);
+
+  const reset = buildInitialCards(elements, "Element");
+  assert.deepEqual(reset.map((card) => ({ id: card.id, name: card.name, mergedFrom: card.mergedFrom })), [
+    { id: 1, name: "Element 1", mergedFrom: null },
+    { id: 2, name: "Element 2", mergedFrom: null },
+  ]);
+});
+
+test("collectMergedPreviewUrls only walks merge-generated previews, including a merge of a merge", () => {
+  const a = makeCard(1, 0, 0, 10, 10);
+  const b = makeCard(2, 20, 0, 10, 10);
+  const firstMerge = applyMerge([a, b], [a, b], 900, "blob:first-merge", "Merged element")[0];
+  const c = makeCard(3, 40, 0, 10, 10);
+  const secondMerge = applyMerge([firstMerge, c], [firstMerge, c], 901, "blob:second-merge", "Merged element")[0];
+
+  assert.deepEqual(collectMergedPreviewUrls(a), []); // plain card: nothing to revoke
+  assert.deepEqual(collectMergedPreviewUrls(secondMerge).sort(), ["blob:first-merge", "blob:second-merge"]);
+});
+
+test("renderCombinedPreview preserves relative spatial position and transparency, not a thumbnail collage", async () => {
+  installCanvasMocks();
+  let capturedImage = null;
+  globalThis.document.createElement = (name) => {
+    assert.equal(name, "canvas");
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext() {
+        return {
+          createImageData(w, h) { return new TestImageData(new Uint8ClampedArray(w * h * 4), w, h); },
+          putImageData(image) { capturedImage = image; },
+        };
+      },
+      toBlob(callback) { callback({ type: "image/png" }); },
+    };
+    return canvas;
+  };
+
+  const source = buildRaster(60, 20, () => [255, 255, 255, 255]);
+  fillCircle(source, 10, 10, 6, [214, 40, 40], false); // left element, opaque solid center
+  fillCircle(source, 50, 10, 6, [23, 138, 216], false); // right element, 40px away
+  const labels = new Int32Array(60 * 20);
+  for (let pixel = 0; pixel < 60 * 20; pixel += 1) {
+    const offset = pixel * 4;
+    if (source.data[offset] === 214) labels[pixel] = 1;
+    else if (source.data[offset + 2] === 216) labels[pixel] = 2;
+  }
+  const bounds = { x: 0, y: 0, width: 60, height: 20 };
+  const url = await renderCombinedPreview(source, labels, bounds, new Set([1, 2]));
+  assert.match(url, /^blob:/);
+  assert.ok(capturedImage);
+
+  const at = (x, y) => {
+    const offset = (y * bounds.width + x) * 4;
+    return { r: capturedImage.data[offset], g: capturedImage.data[offset + 1], b: capturedImage.data[offset + 2], a: capturedImage.data[offset + 3] };
+  };
+  // Each element's own solid-color center lands at its original absolute
+  // coordinate (bounds.x/y is 0,0 here, so local == absolute) -- proving
+  // the merge kept the real spatial relationship, not a stretched/rescaled
+  // thumbnail pair.
+  assert.deepEqual(at(10, 10), { r: 214, g: 40, b: 40, a: 255 });
+  assert.deepEqual(at(50, 10), { r: 23, g: 138, b: 216, a: 255 });
+  // The real gap between the two circles must stay fully transparent -- a
+  // thumbnail collage would have pasted them edge to edge with no gap.
+  assert.equal(at(30, 10).a, 0, "empty space between the two elements must be transparent");
+});
+
+test("renameCard applies a trimmed non-empty name and persists it in the card list", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10)];
+  const result = renameCard(cards, 1, "  Cute flower  ");
+  assert.equal(result.applied, true);
+  assert.equal(result.cards[0].name, "Cute flower");
+});
+
+test("renameCard rejects an empty (or whitespace-only) name and leaves the card unchanged", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10, { name: "Original" })];
+  const result = renameCard(cards, 1, "   ");
+  assert.equal(result.applied, false);
+  assert.equal(result.cards[0].name, "Original");
+});
+
+test("a merged card can be renamed like any other card", () => {
+  const a = makeCard(1, 0, 0, 10, 10);
+  const b = makeCard(2, 20, 0, 10, 10);
+  const merged = applyMerge([a, b], [a, b], 999, "blob:merged", "Merged element");
+  const result = renameCard(merged, 999, "Head and hand");
+  assert.equal(result.cards[0].name, "Head and hand");
+});
+
+test("toggleCardExcluded persists the excluded state and restore toggles it back", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10), makeCard(2, 20, 0, 10, 10)];
+  const excluded = toggleCardExcluded(cards, 1);
+  assert.equal(excluded.find((card) => card.id === 1).excluded, true);
+  assert.equal(excluded.find((card) => card.id === 2).excluded, false);
+
+  const restored = toggleCardExcluded(excluded, 1);
+  assert.equal(restored.find((card) => card.id === 1).excluded, false);
+});
+
+test("an excluded card is not treated as an active export candidate", () => {
+  const cards = [makeCard(1, 0, 0, 10, 10), makeCard(2, 20, 0, 10, 10)];
+  const excluded = toggleCardExcluded(cards, 2);
+  const exportCandidates = excluded.filter((card) => !card.excluded);
+  assert.deepEqual(exportCandidates.map((card) => card.id), [1]);
 });

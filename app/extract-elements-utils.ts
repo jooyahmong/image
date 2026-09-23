@@ -23,7 +23,7 @@ export type BackgroundMode = "alpha" | "near-uniform";
 export type BackgroundEstimate = { color: [number, number, number]; confidence: number };
 export type UnsupportedReason = "low-background-confidence" | "background-not-separated" | "no-elements-found";
 export type ExtractionOutcome =
-  | { status: "ok"; elements: ExtractedElement[] }
+  | { status: "ok"; elements: ExtractedElement[]; source: RasterSourceData; labels: Int32Array }
   | { status: "unsupported"; reason: UnsupportedReason };
 
 const ALPHA_BACKGROUND_THRESHOLD = 24;
@@ -404,5 +404,169 @@ export async function detectExtractElements(file: File): Promise<ExtractionOutco
     const previewUrl = await renderElementPreview(source, detection.labels, region);
     elements.push({ ...region, previewUrl });
   }
-  return { status: "ok", elements };
+  return { status: "ok", elements, source, labels: detection.labels };
+}
+
+// --- Review editing (Phase D) --------------------------------------------
+//
+// Pure card-list transformations, kept out of the React component so they
+// can be unit-tested directly (merge/rename/exclude are otherwise just
+// component state, which this codebase has no React-rendering test
+// infrastructure for -- everything else here follows the same "pure logic
+// in vector-utils/extract-elements-utils, thin component on top" pattern).
+
+export type ReviewCard = Bounds & {
+  id: number;
+  area: number;
+  previewUrl: string;
+  name: string;
+  excluded: boolean;
+  sourceRegionIds: number[];
+  mergedFrom: ReviewCard[] | null;
+};
+
+export function buildInitialCards(elements: ExtractedElement[], elementLabel: string): ReviewCard[] {
+  return elements.map((element, index) => ({
+    ...element,
+    name: `${elementLabel} ${index + 1}`,
+    excluded: false,
+    sourceRegionIds: [element.id],
+    mergedFrom: null,
+  }));
+}
+
+// Only a merged card's own previewUrl (and any merged card nested inside
+// its mergedFrom snapshot, i.e. a merge of a merge) is a blob created just
+// for it and needs explicit revocation. A plain card's previewUrl belongs
+// to the original `elements` list and is owned/revoked at the top level.
+export function collectMergedPreviewUrls(card: ReviewCard, urls: string[] = []): string[] {
+  if (card.mergedFrom) {
+    urls.push(card.previewUrl);
+    card.mergedFrom.forEach((member) => collectMergedPreviewUrls(member, urls));
+  }
+  return urls;
+}
+
+// What a merge needs before anything is rendered: the members (>=2), and
+// where/how large the result is. Returns null if fewer than two of the
+// given ids are actually present in `cards` -- the caller's "Merge
+// selected" action should already be disabled in that case, but this
+// makes the invariant explicit and testable on its own.
+export function planMerge(cards: ReviewCard[], selectedIds: ReadonlySet<number>): { bounds: Bounds; memberIds: Set<number>; members: ReviewCard[] } | null {
+  const members = cards.filter((card) => selectedIds.has(card.id));
+  if (members.length < 2) return null;
+  return { bounds: computeUnionBounds(members), memberIds: new Set(members.flatMap((card) => card.sourceRegionIds)), members };
+}
+
+// Replaces `members` in `cards` with one merged card holding their bounds,
+// summed area (exact: Fast Path regions are disjoint by construction, so a
+// merge -- even of merges -- never double-counts a pixel), and a snapshot
+// of the members themselves (`mergedFrom`) so `undoMerge` can restore them
+// exactly as they were.
+export function applyMerge(cards: ReviewCard[], members: ReviewCard[], mergedId: number, previewUrl: string, defaultName: string): ReviewCard[] {
+  const memberIds = new Set(members.map((member) => member.id));
+  const bounds = computeUnionBounds(members);
+  const mergedCard: ReviewCard = {
+    id: mergedId,
+    ...bounds,
+    area: members.reduce((total, member) => total + member.area, 0),
+    previewUrl,
+    name: defaultName,
+    excluded: false,
+    sourceRegionIds: members.flatMap((member) => member.sourceRegionIds),
+    mergedFrom: members,
+  };
+  const firstMemberIndex = cards.findIndex((card) => memberIds.has(card.id));
+  const remaining = cards.filter((card) => !memberIds.has(card.id));
+  const insertAt = cards.slice(0, firstMemberIndex).filter((card) => !memberIds.has(card.id)).length;
+  const next = remaining.slice();
+  next.splice(insertAt, 0, mergedCard);
+  return next;
+}
+
+// Restores a merged card's members in its place. A no-op (returns the same
+// array) if `mergedId` isn't a merged card in `cards` -- the caller is
+// responsible for revoking the merged card's own previewUrl, since that's
+// a side effect this pure function deliberately doesn't perform.
+export function undoMerge(cards: ReviewCard[], mergedId: number): ReviewCard[] {
+  const index = cards.findIndex((card) => card.id === mergedId);
+  if (index === -1 || !cards[index].mergedFrom) return cards;
+  const next = cards.slice();
+  next.splice(index, 1, ...(cards[index].mergedFrom ?? []));
+  return next;
+}
+
+export function renameCard(cards: ReviewCard[], id: number, name: string): { cards: ReviewCard[]; applied: boolean } {
+  const trimmed = name.trim();
+  if (!trimmed) return { cards, applied: false };
+  return { cards: cards.map((card) => card.id === id ? { ...card, name: trimmed } : card), applied: true };
+}
+
+export function toggleCardExcluded(cards: ReviewCard[], id: number): ReviewCard[] {
+  return cards.map((card) => card.id === id ? { ...card, excluded: !card.excluded } : card);
+}
+
+// --- Merge -----------------------------------------------------------
+//
+// Review-step editing tool: combine several already-detected elements into
+// one asset. This must use each element's original source coordinates, not
+// its already-cropped thumbnail, so the merged result keeps the elements'
+// real spatial relationship (gaps between them stay gaps, nothing is
+// stretched or reflowed) -- exactly what a naive thumbnail collage cannot
+// do.
+
+export type Bounds = { x: number; y: number; width: number; height: number };
+
+export function computeUnionBounds(regions: Bounds[]): Bounds {
+  if (!regions.length) return { x: 0, y: 0, width: 0, height: 0 };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxRight = -Infinity;
+  let maxBottom = -Infinity;
+  for (const region of regions) {
+    minX = Math.min(minX, region.x);
+    minY = Math.min(minY, region.y);
+    maxRight = Math.max(maxRight, region.x + region.width);
+    maxBottom = Math.max(maxBottom, region.y + region.height);
+  }
+  return { x: minX, y: minY, width: maxRight - minX, height: maxBottom - minY };
+}
+
+// Renders the union of several original label ids into one transparent
+// canvas sized to their union bounds. Sibling of `renderElementPreview`
+// (which only ever tests membership against one id): this tests membership
+// against a set, since a merged card's underlying pixels can come from more
+// than one originally-detected region (and, for a merge of a merge, from
+// more than one merge).
+export async function renderCombinedPreview(source: RasterSourceData, labels: Int32Array, bounds: Bounds, memberIds: ReadonlySet<number>): Promise<string> {
+  const canvas = document.createElement("canvas");
+  canvas.width = bounds.width;
+  canvas.height = bounds.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas 2D context is unavailable.");
+  const output = context.createImageData(bounds.width, bounds.height);
+
+  for (let localY = 0; localY < bounds.height; localY += 1) {
+    const sourceY = bounds.y + localY;
+    for (let localX = 0; localX < bounds.width; localX += 1) {
+      const sourceX = bounds.x + localX;
+      const outputOffset = (localY * bounds.width + localX) * 4;
+      if (sourceX >= source.width || sourceY >= source.height || sourceX < 0 || sourceY < 0) {
+        output.data[outputOffset + 3] = 0;
+        continue;
+      }
+      const sourcePixel = sourceY * source.width + sourceX;
+      const sourceOffset = sourcePixel * 4;
+      const included = memberIds.has(labels[sourcePixel]);
+      output.data[outputOffset] = source.data[sourceOffset];
+      output.data[outputOffset + 1] = source.data[sourceOffset + 1];
+      output.data[outputOffset + 2] = source.data[sourceOffset + 2];
+      output.data[outputOffset + 3] = included ? source.data[sourceOffset + 3] : 0;
+    }
+  }
+
+  context.putImageData(output, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("Merged element preview rendering failed.");
+  return URL.createObjectURL(blob);
 }

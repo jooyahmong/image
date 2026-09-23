@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
+  Combine,
   Download,
   FileImage,
   FolderArchive,
@@ -12,9 +13,26 @@ import {
   LockKeyhole,
   Pencil,
   RotateCcw,
+  Undo2,
   UploadCloud,
+  X,
 } from "lucide-react";
-import { detectExtractElements, validateExtractElementsFile, type ExtractedElement, type UnsupportedReason } from "./extract-elements-utils";
+import {
+  buildInitialCards,
+  collectMergedPreviewUrls,
+  detectExtractElements,
+  planMerge,
+  applyMerge,
+  undoMerge as undoMergeInCards,
+  renameCard,
+  toggleCardExcluded,
+  renderCombinedPreview,
+  validateExtractElementsFile,
+  type ExtractedElement,
+  type RasterSourceData,
+  type ReviewCard,
+  type UnsupportedReason,
+} from "./extract-elements-utils";
 
 type Language = "en" | "ko";
 type UploadedImage = { file: File; url: string };
@@ -45,6 +63,18 @@ const copy = {
     deselectAll: "Deselect all",
     selectedCount: (selected: number, total: number) => `${selected} / ${total} selected`,
     elementLabel: "Element",
+    mergeSelected: "Merge selected",
+    mergedDefaultName: "Merged element",
+    mergedFromLabel: (count: number) => `Merged from ${count} elements`,
+    undoMerge: "Undo merge",
+    resetExtraction: "Reset extraction",
+    exclude: "Exclude",
+    restore: "Restore",
+    excludedBadge: "Excluded",
+    rename: "Rename",
+    saveName: "Save name",
+    cancelRename: "Cancel",
+    emptyNameHint: "Name can't be empty.",
     unsupportedTitle: "Not suited for automatic separation",
     unsupportedMessage: "This image may not be suitable for automatic element extraction.\nTry an image with separated elements and a simple background.",
     nextTitle: "What comes next",
@@ -82,6 +112,18 @@ const copy = {
     deselectAll: "전체 해제",
     selectedCount: (selected: number, total: number) => `${selected} / ${total}개 선택됨`,
     elementLabel: "요소",
+    mergeSelected: "선택한 요소 합치기",
+    mergedDefaultName: "합쳐진 요소",
+    mergedFromLabel: (count: number) => `${count}개 요소를 합침`,
+    undoMerge: "합치기 취소",
+    resetExtraction: "추출 결과 초기화",
+    exclude: "제외",
+    restore: "복원",
+    excludedBadge: "제외됨",
+    rename: "이름 바꾸기",
+    saveName: "이름 저장",
+    cancelRename: "취소",
+    emptyNameHint: "이름을 비워둘 수 없습니다.",
     unsupportedTitle: "자동 분리에 적합하지 않음",
     unsupportedMessage: "이 이미지는 자동 요소 분리에 적합하지 않을 수 있습니다.\n요소가 서로 떨어져 있고 배경이 단순한 이미지를 사용해 주세요.",
     nextTitle: "다음 단계에서 할 일",
@@ -103,13 +145,21 @@ export default function ExtractElementsPage() {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const [elements, setElements] = useState<ExtractedElement[]>([]);
+  const [cards, setCards] = useState<ReviewCard[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [detecting, setDetecting] = useState(false);
   const [detectionError, setDetectionError] = useState("");
   const [unsupportedReason, setUnsupportedReason] = useState<UnsupportedReason | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingValue, setEditingValue] = useState("");
   const content = copy[language];
   const elementsRef = useRef<ExtractedElement[]>([]);
+  const cardsRef = useRef<ReviewCard[]>([]);
+  const sourceRef = useRef<RasterSourceData | null>(null);
+  const labelsRef = useRef<Int32Array | null>(null);
+  const nextMergedIdRef = useRef(100000);
   elementsRef.current = elements;
+  cardsRef.current = cards;
 
   useEffect(() => () => {
     if (upload) URL.revokeObjectURL(upload.url);
@@ -117,6 +167,7 @@ export default function ExtractElementsPage() {
 
   useEffect(() => () => {
     elementsRef.current.forEach((element) => URL.revokeObjectURL(element.previewUrl));
+    cardsRef.current.forEach((card) => collectMergedPreviewUrls(card).forEach((url) => URL.revokeObjectURL(url)));
   }, []);
 
   useEffect(() => {
@@ -133,17 +184,26 @@ export default function ExtractElementsPage() {
 
   const runDetection = useCallback(async (file: File) => {
     elementsRef.current.forEach((element) => URL.revokeObjectURL(element.previewUrl));
+    cardsRef.current.forEach((card) => collectMergedPreviewUrls(card).forEach((url) => URL.revokeObjectURL(url)));
     setElements([]);
+    setCards([]);
     setSelectedIds(new Set());
     setDetectionError("");
     setUnsupportedReason(null);
+    setEditingId(null);
+    sourceRef.current = null;
+    labelsRef.current = null;
+    nextMergedIdRef.current = 100000;
     setDetecting(true);
     try {
       const outcome = await detectExtractElements(file);
       if (outcome.status === "unsupported") {
         setUnsupportedReason(outcome.reason);
       } else {
+        sourceRef.current = outcome.source;
+        labelsRef.current = outcome.labels;
         setElements(outcome.elements);
+        setCards(buildInitialCards(outcome.elements, content.elementLabel));
         setSelectedIds(new Set(outcome.elements.map((element) => element.id)));
       }
     } catch {
@@ -151,7 +211,7 @@ export default function ExtractElementsPage() {
     } finally {
       setDetecting(false);
     }
-  }, [content.detectionError]);
+  }, [content.detectionError, content.elementLabel]);
 
   const acceptFile = (file?: File) => {
     if (!file) return;
@@ -173,8 +233,57 @@ export default function ExtractElementsPage() {
     });
   };
 
-  const selectAll = () => setSelectedIds(new Set(elements.map((element) => element.id)));
+  const selectAll = () => setSelectedIds(new Set(cards.map((card) => card.id)));
   const deselectAll = () => setSelectedIds(new Set());
+
+  const mergeSelected = useCallback(async () => {
+    const source = sourceRef.current;
+    const labels = labelsRef.current;
+    if (!source || !labels) return;
+    const plan = planMerge(cards, selectedIds);
+    if (!plan) return;
+
+    const previewUrl = await renderCombinedPreview(source, labels, plan.bounds, plan.memberIds);
+    const mergedId = nextMergedIdRef.current;
+    nextMergedIdRef.current += 1;
+
+    setCards((current) => applyMerge(current, plan.members, mergedId, previewUrl, content.mergedDefaultName));
+    setSelectedIds(new Set([mergedId]));
+  }, [cards, selectedIds, content.mergedDefaultName]);
+
+  const undoMerge = (mergedId: number) => {
+    const merged = cards.find((card) => card.id === mergedId);
+    if (!merged?.mergedFrom) return;
+    URL.revokeObjectURL(merged.previewUrl);
+    setCards((current) => undoMergeInCards(current, mergedId));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.delete(mergedId);
+      return next;
+    });
+  };
+
+  const resetExtraction = () => {
+    cards.forEach((card) => collectMergedPreviewUrls(card).forEach((url) => URL.revokeObjectURL(url)));
+    setCards(buildInitialCards(elements, content.elementLabel));
+    setSelectedIds(new Set(elements.map((element) => element.id)));
+    setEditingId(null);
+  };
+
+  const toggleExcluded = (id: number) => {
+    setCards((current) => toggleCardExcluded(current, id));
+  };
+
+  const startRename = (card: ReviewCard) => {
+    setEditingId(card.id);
+    setEditingValue(card.name);
+  };
+
+  const commitRename = (id: number) => {
+    setCards((current) => renameCard(current, id, editingValue).cards);
+    setEditingId(null);
+  };
+
   const activeStepIndex = upload ? 1 : 0;
 
   return (
@@ -257,18 +366,20 @@ export default function ExtractElementsPage() {
               <span>{content.reviewLabel}</span><h2>{content.reviewTitle}</h2><p>{content.reviewHint}</p>
               <p className="extract-review-limitation">{content.limitationNote}</p>
             </div>
-            {elements.length > 0 && (
+            {cards.length > 0 && (
               <div className="extract-review-controls">
-                <span className="extract-review-count">{content.selectedCount(selectedIds.size, elements.length)}</span>
+                <span className="extract-review-count">{content.selectedCount(selectedIds.size, cards.length)}</span>
                 <button type="button" onClick={selectAll}><Check size={14} />{content.selectAll}</button>
                 <button type="button" onClick={deselectAll}>{content.deselectAll}</button>
+                <button type="button" disabled={selectedIds.size < 2} onClick={() => void mergeSelected()}><Combine size={14} />{content.mergeSelected}</button>
+                <button type="button" onClick={resetExtraction}><RotateCcw size={14} />{content.resetExtraction}</button>
               </div>
             )}
           </div>
 
           {detectionError ? (
             <p className="extract-error" role="alert">{detectionError}</p>
-          ) : unsupportedReason || elements.length === 0 ? (
+          ) : unsupportedReason || cards.length === 0 ? (
             <div className="extract-unsupported-state" role="status">
               <ImageOff size={22} />
               <strong>{content.unsupportedTitle}</strong>
@@ -276,22 +387,56 @@ export default function ExtractElementsPage() {
             </div>
           ) : (
             <div className="extract-element-grid" role="list">
-              {elements.map((element, index) => {
-                const selected = selectedIds.has(element.id);
+              {cards.map((card) => {
+                const selected = selectedIds.has(card.id);
+                const editing = editingId === card.id;
                 return (
-                  <article className={`extract-element-card ${selected ? "selected" : ""}`} key={element.id} role="listitem">
+                  <article className={`extract-element-card ${selected ? "selected" : ""} ${card.excluded ? "excluded" : ""}`} key={card.id} role="listitem">
                     <button
                       type="button"
                       className="extract-element-checkbox"
                       aria-pressed={selected}
-                      aria-label={`${content.elementLabel} ${index + 1}`}
-                      onClick={() => toggleElement(element.id)}
+                      aria-label={`${content.elementLabel} ${card.name}`}
+                      onClick={() => toggleElement(card.id)}
                     >
                       {selected && <Check size={13} />}
                     </button>
-                    <div className="extract-element-preview"><img src={element.previewUrl} alt={`${content.elementLabel} ${index + 1}`} /></div>
-                    <span className="extract-element-name">{content.elementLabel} {index + 1}</span>
-                    <span className="extract-element-size">{element.width}×{element.height}</span>
+                    {card.excluded && <span className="extract-excluded-badge">{content.excludedBadge}</span>}
+                    <div className="extract-element-preview"><img src={card.previewUrl} alt={card.name} /></div>
+
+                    {editing ? (
+                      <div className="extract-element-rename">
+                        <input
+                          className="extract-element-name-input"
+                          value={editingValue}
+                          autoFocus
+                          onChange={(event) => setEditingValue(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") commitRename(card.id);
+                            if (event.key === "Escape") setEditingId(null);
+                          }}
+                        />
+                        <button type="button" aria-label={content.saveName} onClick={() => commitRename(card.id)}><Check size={13} /></button>
+                        <button type="button" aria-label={content.cancelRename} onClick={() => setEditingId(null)}><X size={13} /></button>
+                      </div>
+                    ) : (
+                      <button type="button" className="extract-element-name" onClick={() => startRename(card)} aria-label={content.rename}>
+                        {card.name}<Pencil size={11} />
+                      </button>
+                    )}
+
+                    <span className="extract-element-size">{card.width}×{card.height}</span>
+
+                    {card.mergedFrom && (
+                      <div className="extract-element-merge-info">
+                        <span>{content.mergedFromLabel(card.mergedFrom.length)}</span>
+                        <button type="button" onClick={() => undoMerge(card.id)}><Undo2 size={12} />{content.undoMerge}</button>
+                      </div>
+                    )}
+
+                    <button type="button" className="extract-element-exclude" onClick={() => toggleExcluded(card.id)}>
+                      {card.excluded ? content.restore : content.exclude}
+                    </button>
                   </article>
                 );
               })}

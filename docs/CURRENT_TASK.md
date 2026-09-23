@@ -127,7 +127,7 @@ This planning pass, recorded in full in `docs/SMART_EXTRACT.md`:
   ("Quick Extract" / "Smart Extract (Beta)" as two distinct entry points)
   is described in `docs/SMART_EXTRACT.md` §12 but not built.
 
-## Smart Extract — Feasibility Spike (docs only, `docs/SMART_EXTRACT_SPIKE.md`, not committed yet)
+## Smart Extract — Feasibility Spike (docs only, `docs/SMART_EXTRACT_SPIKE.md`, committed as `5586c67`)
 
 Attempted to install `onnxruntime-node` and run 1-2 candidate models
 against synthetic overlapping-artwork images in an isolated scratchpad
@@ -171,35 +171,75 @@ personally-run benchmark:
   (non-synthetic) overlapping template images, in an environment that can
   actually reach the model host.
 
+## Phase D — Quick Extract Review Tools (not committed yet)
+
+Decision: Smart Extract stays deferred (see `docs/DECISIONS.md`); Quick
+Extract is being finished first. This phase adds Review-step editing to
+Quick Extract only -- no Smart Extract, no export formats yet.
+
+- **Merge selected.** New pure functions in `extract-elements-utils.ts`
+  (`planMerge`, `applyMerge`, `computeUnionBounds`) combine 2+ selected
+  cards into one transparent asset using each member's real source
+  coordinates -- not a thumbnail collage. The result is rendered with a
+  new `renderCombinedPreview` (a sibling of the existing
+  `renderElementPreview`, testing membership against a set of original
+  label ids instead of one) onto a canvas sized to the members' union
+  bounding box, so real gaps between elements stay transparent and nothing
+  is stretched. `detectExtractElements`'s "ok" outcome now also returns
+  the decoded `source` and `labels`, since merging needs the original
+  pixels, not just the already-cropped previews. Every card (plain or
+  merged) carries `sourceRegionIds`, so merging a previously-merged card
+  with something else works by flattening those ids -- no recursion limit
+  in practice.
+- **Undo merge / Reset extraction.** `undoMerge` restores a merged card's
+  exact member snapshot in its place; `buildInitialCards` rebuilds the
+  whole card list from the untouched original `elements` for Reset. Both
+  are pure functions operating on the card list; the component only owns
+  the object-URL cleanup side effect (`collectMergedPreviewUrls`, also
+  moved into utils, walks nested merge-of-merge previews without ever
+  touching the original detected elements' previews).
+- **Rename.** Inline edit per card (pencil-labeled name button -> input,
+  Enter/Save or Escape/Cancel). `renameCard` trims and rejects an empty
+  result (`{ applied: false }`), leaving the card unchanged. No AI/content-
+  based naming -- manual only, as scoped.
+- **Exclude / Restore.** `toggleCardExcluded` flips a card's own
+  `excluded` flag, fully independent of `selectedIds` (selection = current
+  bulk-action target; excluded = won't be part of export later). Original
+  card data is never deleted.
+- UI: same card grid, no new modals. Top bar gained Merge selected (needs
+  2+) and Reset extraction. Each card gained the rename control, an
+  Exclude/Restore button, an "Excluded" badge, and, for merged cards, a
+  "Merged from N elements" line with Undo merge.
+- Tests: 14 new (merge x2, union bbox, area sum, applyMerge shape, undo,
+  reset, collectMergedPreviewUrls incl. merge-of-merge, spatial-position +
+  transparency via a real rendered preview, rename x3, exclude x2) -- all
+  in `extract-elements-utils.ts`'s pure layer, since this codebase has no
+  React-rendering test setup; the component was kept thin specifically so
+  this logic could move out and be tested directly. 69 tests total, all
+  passing, including every existing Image-to-SVG regression (untouched --
+  `app/page.tsx` and `app/vector-utils.ts` were not touched this phase).
+
 ## Next
 
-1. Get sign-off on this spike's findings before deciding whether to commit
-   `docs/SMART_EXTRACT_SPIKE.md` (per instruction, not committed yet).
-2. Whoever continues this needs model access first, not a model choice --
-   get one real SAM-family/FastSAM ONNX file loading in an environment
-   that can reach Hugging Face (or a confirmed-reachable mirror), then run
-   it against 3-5 real overlapping template images per
-   `docs/SMART_EXTRACT_SPIKE.md` §7.
-3. Real-user QA per Phase C.5/C.6 instructions: run at least 3 real
-   templates through `/extract-elements` before calling Quick Extract
-   production-ready -- (A) a white/transparent asset sheet, (B) a
-   cream/pastel-background asset sheet, (C) a template with some elements
-   close together or overlapping. Synthetic QA only goes so far, and this
-   is also the same evidence Smart Extract's §11 step 1 needs.
-4. Per `docs/SMART_EXTRACT.md` §11: feasibility-spike a real segmentation
-   model against real template images (not natural-photo benchmarks)
-   before committing to local, server, or hybrid for Smart Extract.
-5. Phase D: add rename and exclude/remove to the existing element cards
-   (select-all/deselect-all and individual selection are already done).
-6. Phase E: reuse the existing SVG engine for extracted SVG assets and add
-   PNG/JPG export.
-7. Decide the semantic-metadata architecture before Phase F filenames and
-   Phase G keywords — current cards use placeholder names ("Element 1" /
-   "요소 1").
-8. AI-assisted detection for Quick Extract itself is still not required
-   (see `docs/ELEMENT_DETECTION_SPIKE.md`); Smart Extract is the separate,
-   deliberate path for the overlapping-template need instead.
-9. Keep the route hidden until Phases C–J pass end to end and navigation
+1. Get sign-off on Phase D before deciding whether to commit it (per
+   instruction, not committed yet -- report first).
+2. Real-user QA: run at least 3 real templates through `/extract-elements`
+   before calling Quick Extract production-ready -- (A) a
+   white/transparent asset sheet, (B) a cream/pastel-background asset
+   sheet, (C) a template with some elements close together or merged by
+   Quick Extract, to confirm Merge/Rename/Exclude actually make that
+   result usable. Synthetic QA only goes so far.
+3. Phase E: reuse the existing SVG engine for extracted SVG assets and add
+   PNG/JPG export -- the natural next step now that Review has real
+   editing tools, per Phase D's own "not yet" list (no filenames/CSV/ZIP/
+   SVG/JPG export or donation UI were added this phase).
+4. Decide the semantic-metadata architecture before Phase F filenames and
+   Phase G keywords — cards still use placeholder/manually-renamed names,
+   no content-based automatic naming.
+5. Smart Extract stays deferred per `docs/DECISIONS.md`; whoever revisits
+   it needs model access first (see `docs/SMART_EXTRACT_SPIKE.md` §7) --
+   not blocking Quick Extract V1.
+6. Keep the route hidden until Phases C–J pass end to end and navigation
    exposure is explicitly approved.
 
 ## Release Safety
