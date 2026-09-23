@@ -1,19 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
   Download,
   FileImage,
   FolderArchive,
+  ImageOff,
   ImagePlus,
   Languages,
-  Layers3,
+  Loader2,
   LockKeyhole,
   Pencil,
   RotateCcw,
   UploadCloud,
 } from "lucide-react";
-import { validateExtractElementsFile } from "./extract-elements-utils";
+import { detectExtractElements, validateExtractElementsFile, type ExtractedElement } from "./extract-elements-utils";
 
 type Language = "en" | "ko";
 type UploadedImage = { file: File; url: string };
@@ -34,16 +35,24 @@ const copy = {
     formats: "PNG · JPG · JPEG · WEBP · up to 10 MB",
     reading: "Reading your image…",
     ready: "Ready for element detection",
+    detecting: "Detecting elements…",
+    detectionError: "Couldn't detect elements in that image. Try a different file.",
+    reviewLabel: "STEP 2",
+    reviewTitle: "Review detected elements",
+    reviewHint: "This early fast-path detector works best on flat artwork with a transparent, white, or near-white background.",
+    selectAll: "Select all",
+    deselectAll: "Deselect all",
+    selectedCount: (selected: number, total: number) => `${selected} / ${total} selected`,
+    elementLabel: "Element",
+    noElementsTitle: "No separate elements found",
+    noElementsText: "Try an image with a plain white or transparent background around each shape.",
     nextTitle: "What comes next",
-    nextIntro: "The next development phase connects element detection to this workspace.",
-    reviewTitle: "Review individual elements",
-    reviewText: "Select, rename, or exclude each detected asset in a visual card grid.",
+    nextIntro: "The next development phase connects export and content-based filenames to this workspace.",
     exportTitle: "Export only what you need",
     exportText: "Choose PNG, JPG, SVG, or CSV, then download selected items or one ZIP.",
     filenameTitle: "English or Korean metadata",
     filenameText: "Generate editable filenames, titles, and keywords in your preferred language.",
     status: "Hidden development route · not linked from the live site",
-    pending: "Element extraction will be connected in the next phase.",
     typeError: "Choose a PNG, JPG, JPEG, or WebP image.",
     sizeError: "Choose an image smaller than 10 MB.",
   },
@@ -62,16 +71,24 @@ const copy = {
     formats: "PNG · JPG · JPEG · WEBP · 최대 10 MB",
     reading: "이미지를 읽는 중…",
     ready: "요소 감지 준비 완료",
+    detecting: "요소를 감지하는 중…",
+    detectionError: "이 이미지에서 요소를 감지하지 못했습니다. 다른 파일을 시도해 주세요.",
+    reviewLabel: "2단계",
+    reviewTitle: "감지된 요소 확인",
+    reviewHint: "이 초기 감지 기능은 투명하거나 흰색·거의 흰색 배경의 단순한 이미지에서 가장 잘 작동합니다.",
+    selectAll: "전체 선택",
+    deselectAll: "전체 해제",
+    selectedCount: (selected: number, total: number) => `${selected} / ${total}개 선택됨`,
+    elementLabel: "요소",
+    noElementsTitle: "분리된 요소를 찾지 못했습니다",
+    noElementsText: "각 모양 주위에 흰색이나 투명한 배경이 있는 이미지를 사용해 보세요.",
     nextTitle: "다음 단계에서 할 일",
-    nextIntro: "다음 개발 단계에서 이 작업 공간에 요소 감지 기능을 연결합니다.",
-    reviewTitle: "요소별로 확인",
-    reviewText: "감지된 에셋을 카드로 보고 선택하거나 이름을 바꾸고 제외할 수 있습니다.",
+    nextIntro: "다음 개발 단계에서 이 작업 공간에 내보내기와 콘텐츠 기반 파일명 기능을 연결합니다.",
     exportTitle: "필요한 형식만 내보내기",
     exportText: "PNG, JPG, SVG, CSV를 선택해 필요한 항목이나 전체 ZIP을 저장합니다.",
     filenameTitle: "영어 또는 한국어 메타데이터",
     filenameText: "선택한 언어로 파일명, 제목, 키워드를 만들고 직접 수정할 수 있습니다.",
     status: "숨김 개발 경로 · 운영 사이트에는 연결되지 않음",
-    pending: "요소 추출 기능은 다음 단계에서 연결됩니다.",
     typeError: "PNG, JPG, JPEG 또는 WebP 이미지를 선택해 주세요.",
     sizeError: "10 MB보다 작은 이미지를 선택해 주세요.",
   },
@@ -83,11 +100,21 @@ export default function ExtractElementsPage() {
   const [upload, setUpload] = useState<UploadedImage | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
+  const [elements, setElements] = useState<ExtractedElement[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [detecting, setDetecting] = useState(false);
+  const [detectionError, setDetectionError] = useState("");
   const content = copy[language];
+  const elementsRef = useRef<ExtractedElement[]>([]);
+  elementsRef.current = elements;
 
   useEffect(() => () => {
     if (upload) URL.revokeObjectURL(upload.url);
   }, [upload]);
+
+  useEffect(() => () => {
+    elementsRef.current.forEach((element) => URL.revokeObjectURL(element.previewUrl));
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -101,6 +128,23 @@ export default function ExtractElementsPage() {
     window.history.replaceState({}, "", url);
   };
 
+  const runDetection = useCallback(async (file: File) => {
+    elementsRef.current.forEach((element) => URL.revokeObjectURL(element.previewUrl));
+    setElements([]);
+    setSelectedIds(new Set());
+    setDetectionError("");
+    setDetecting(true);
+    try {
+      const detected = await detectExtractElements(file);
+      setElements(detected);
+      setSelectedIds(new Set(detected.map((element) => element.id)));
+    } catch {
+      setDetectionError(content.detectionError);
+    } finally {
+      setDetecting(false);
+    }
+  }, [content.detectionError]);
+
   const acceptFile = (file?: File) => {
     if (!file) return;
     setError("");
@@ -110,7 +154,20 @@ export default function ExtractElementsPage() {
       return;
     }
     setUpload({ file, url: URL.createObjectURL(file) });
+    void runDetection(file);
   };
+
+  const toggleElement = (id: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedIds(new Set(elements.map((element) => element.id)));
+  const deselectAll = () => setSelectedIds(new Set());
+  const activeStepIndex = upload ? 1 : 0;
 
   return (
     <main className="extract-page" lang={language}>
@@ -134,7 +191,7 @@ export default function ExtractElementsPage() {
           <p>{content.intro}</p>
         </div>
         <ol className="extract-steps" aria-label={language === "ko" ? "요소 추출 진행 단계" : "Extract Elements progress"}>
-          {content.steps.map((step, index) => <li className={index === 0 ? "active" : ""} key={step}><span>{index + 1}</span>{step}</li>)}
+          {content.steps.map((step, index) => <li className={index === activeStepIndex ? "active" : ""} key={step}><span>{index + 1}</span>{step}</li>)}
         </ol>
       </section>
 
@@ -172,19 +229,61 @@ export default function ExtractElementsPage() {
           </div>
           <input ref={fileInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => acceptFile(event.target.files?.[0])} />
           {error && <p className="extract-error" role="alert">{error}</p>}
-          <button className="extract-pending-button" type="button" disabled><Layers3 size={18} />{content.pending}</button>
+          {detecting && <p className="extract-detecting"><Loader2 size={16} className="extract-spin" />{content.detecting}</p>}
         </article>
 
         <aside className="extract-next-card">
           <div className="extract-next-heading"><span><ImagePlus size={20} /></span><div><h2>{content.nextTitle}</h2><p>{content.nextIntro}</p></div></div>
           <div className="extract-next-list">
-            <article><span><Layers3 size={19} /></span><div><h3>{content.reviewTitle}</h3><p>{content.reviewText}</p></div></article>
             <article><span><FolderArchive size={19} /></span><div><h3>{content.exportTitle}</h3><p>{content.exportText}</p></div></article>
             <article><span><Languages size={19} /></span><div><h3>{content.filenameTitle}</h3><p>{content.filenameText}</p></div></article>
           </div>
           <div className="extract-format-preview" aria-hidden="true"><span><Pencil size={15} />filename_01</span><span><Download size={15} />PNG</span><span>JPG</span><span>SVG</span><span>CSV</span></div>
         </aside>
       </section>
+
+      {upload && !detecting && (
+        <section className="extract-review">
+          <div className="extract-review-heading">
+            <div><span>{content.reviewLabel}</span><h2>{content.reviewTitle}</h2><p>{content.reviewHint}</p></div>
+            {elements.length > 0 && (
+              <div className="extract-review-controls">
+                <span className="extract-review-count">{content.selectedCount(selectedIds.size, elements.length)}</span>
+                <button type="button" onClick={selectAll}><Check size={14} />{content.selectAll}</button>
+                <button type="button" onClick={deselectAll}>{content.deselectAll}</button>
+              </div>
+            )}
+          </div>
+
+          {detectionError ? (
+            <p className="extract-error" role="alert">{detectionError}</p>
+          ) : elements.length === 0 ? (
+            <div className="extract-empty-state"><ImageOff size={22} /><strong>{content.noElementsTitle}</strong><p>{content.noElementsText}</p></div>
+          ) : (
+            <div className="extract-element-grid" role="list">
+              {elements.map((element, index) => {
+                const selected = selectedIds.has(element.id);
+                return (
+                  <article className={`extract-element-card ${selected ? "selected" : ""}`} key={element.id} role="listitem">
+                    <button
+                      type="button"
+                      className="extract-element-checkbox"
+                      aria-pressed={selected}
+                      aria-label={`${content.elementLabel} ${index + 1}`}
+                      onClick={() => toggleElement(element.id)}
+                    >
+                      {selected && <Check size={13} />}
+                    </button>
+                    <div className="extract-element-preview"><img src={element.previewUrl} alt={`${content.elementLabel} ${index + 1}`} /></div>
+                    <span className="extract-element-name">{content.elementLabel} {index + 1}</span>
+                    <span className="extract-element-size">{element.width}×{element.height}</span>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       <footer className="extract-status"><span />{content.status}</footer>
     </main>

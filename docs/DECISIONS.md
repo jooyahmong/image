@@ -21,3 +21,4 @@
 - Image generation is postponed.
 - WOOJOO Image is a live production site. New features remain unlinked and hidden until end-to-end testing is complete.
 - Navigation exposure is the final release step and requires explicit approval.
+- Extract Elements V1 detection starts with a local, dependency-free Fast Path (alpha/near-white background + connected components). AI segmentation (SAM/SAM2/MobileSAM/Transformers.js) stays a later, explicit opt-in behind a WebGPU capability check and is not required for V1; see `docs/ELEMENT_DETECTION_SPIKE.md`.

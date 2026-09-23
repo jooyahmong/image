@@ -28,22 +28,25 @@ Extract Elements V1
 - Phase A: shared project documentation structure and codebase audit are complete.
 - Extract Elements V1 product scope, confirmed decisions, UI rules, release safety, and technical boundary are documented.
 - Phase B: the hidden `/extract-elements` route and isolated bilingual page shell are complete.
-- The page includes a one-image upload surface, PNG/JPG/JPEG/WebP and 10 MB validation, empty/valid/error UI states, and clear Upload → Review → Export framing.
-- Production editor and landing navigation remain unchanged and contain no Extract Elements link.
-- Local responsive checks passed at 1920px, 768px, and 390px without horizontal overflow.
-- Build, lint, typecheck, and all automated tests pass, including the existing Image-to-SVG regressions.
+- Local checkpoint commit `b55ad02` captured Phase B + shared docs; `4e7b3ff` added a `.gitignore` rule for generated test diagnostics (`tests/artifacts/`).
+- Phase C: local Fast Path element detection is implemented and connected to the Review step.
+  - `app/extract-elements-utils.ts`: `computeForegroundMask` (real alpha, else near-white border flood fill) and `detectFastPathElements` (8-connected labeling, dust filter, padded bbox), both pure and Node-tested; `decodeImageFileToRasterSource` / `renderElementPreview` are the browser-only canvas glue; `detectExtractElements(file)` is the single model-agnostic entry point the page calls.
+  - Review step now shows real detected-element cards (transparent PNG previews) with individual Select/Deselect, Select all, and Deselect all. An empty state and a detection-error state are handled.
+  - AI segmentation (SAM/SAM2/MobileSAM/Transformers.js) was evaluated as a feasibility spike only, per `docs/ELEMENT_DETECTION_SPIKE.md`; none are wired in, and none are a dependency of this app.
+- Build, lint, typecheck, and all automated tests pass (40), including the existing Image-to-SVG regressions and the new Extract Elements unit tests.
 
 ## In Progress
 
-- No Phase C element-detection implementation has started.
+- Rename and Exclude/remove per-element actions (part of the Review spec in `EXTRACT_ELEMENTS.md` section C) are not built — this session's scope was detection + select/deselect only.
 
 ## Next
 
-1. Phase C: choose and implement local element detection/extraction while keeping text and background handling separable.
-2. Phase D: add real element cards with select-all, individual selection, rename, and exclude actions.
-3. Phase E: reuse the existing SVG engine for extracted SVG assets and add PNG/JPG export.
-4. Decide the semantic-metadata architecture before Phase F filenames and Phase G keywords.
-5. Keep the route hidden until Phases C–J pass end to end and navigation exposure is explicitly approved.
+1. Phase D: add rename and exclude/remove to the existing element cards (select-all/deselect-all and individual selection are already done).
+2. Phase E: reuse the existing SVG engine for extracted SVG assets and add PNG/JPG export.
+3. Decide the semantic-metadata architecture before Phase F filenames and Phase G keywords — current cards use placeholder names ("Element 1" / "요소 1").
+4. Revisit AI-assisted detection only as an explicit opt-in, WebGPU-gated addition later (see `docs/ELEMENT_DETECTION_SPIKE.md`); it is not required for V1's fast path to work.
+5. Manually verify the Fast Path in a real browser (drag-drop, real decode, card grid) — this session's environment had no browser-automation tool, so verification was Node unit tests (mocked canvas) + typecheck/build/lint + an HTTP smoke check only.
+6. Keep the route hidden until Phases C–J pass end to end and navigation exposure is explicitly approved.
 
 ## Release Safety
 
