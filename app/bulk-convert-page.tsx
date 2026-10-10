@@ -51,7 +51,6 @@ const copy = {
     eyebrow: "BULK SVG CONVERT",
     title: "Convert many images to SVG at once.",
     intro: "Upload multiple PNG, JPG, JPEG or WebP images and convert them to SVG at once. Bulk conversion currently supports SVG output only.",
-    status: "Hidden development route · not linked from the live site",
     dropTitle: "Drop images here",
     dropHint: "or click to choose files",
     formats: `PNG · JPG · JPEG · WEBP · up to ${BULK_MAX_FILES} files`,
@@ -85,7 +84,6 @@ const copy = {
     eyebrow: "일괄 SVG 변환",
     title: "여러 이미지를 한 번에 SVG로 변환하세요.",
     intro: "여러 PNG, JPG, JPEG, WebP 이미지를 한 번에 SVG로 변환할 수 있습니다. 현재 일괄 변환은 SVG 저장만 지원합니다.",
-    status: "숨겨진 개발 경로 · 실제 서비스에는 연결되어 있지 않습니다",
     dropTitle: "이미지를 여기에 놓으세요",
     dropHint: "또는 클릭하여 파일을 선택하세요",
     formats: `PNG · JPG · JPEG · WEBP · 최대 ${BULK_MAX_FILES}개`,
@@ -262,7 +260,6 @@ export default function BulkConvertPage() {
         <span className="bulk-eyebrow"><Languages size={13} />{content.eyebrow}</span>
         <h1>{content.title}</h1>
         <p>{content.intro}</p>
-        <span className="bulk-route-status">{content.status}</span>
       </section>
 
       <section

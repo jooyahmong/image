@@ -29,7 +29,6 @@
 .bulk-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--bulk-coral); font-size: 12.5px; font-weight: 900; letter-spacing: .16em; }
 .bulk-heading h1 { margin: 8px 0 6px; font-size: 26px; letter-spacing: -.02em; }
 .bulk-heading p { margin: 0; color: var(--bulk-muted); font-size: 14.5px; line-height: 1.55; }
-.bulk-route-status { display: inline-block; margin-top: 10px; color: #97906f; font-size: 12px; font-weight: 700; }
 
 .bulk-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 32px 20px; border: 1.5px dashed var(--bulk-line); border-radius: 16px; background: #fff; cursor: pointer; text-align: center; }
 .bulk-dropzone.dragging { border-color: var(--bulk-green); background: var(--bulk-mint); }

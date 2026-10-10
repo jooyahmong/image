@@ -116,7 +116,7 @@ test("keeps Extract Elements on an isolated unlinked development route", () => {
   assert.doesNotMatch(landing, /\/extract-elements/);
 });
 
-test("keeps Bulk SVG Convert on an isolated unlinked development route", () => {
+test("exposes Bulk SVG Convert in the editor's navigation, while keeping it isolated code-wise and out of the landing page / Extract Elements", () => {
   const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
   const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
   const bulkUtils = readFileSync(new URL("../app/bulk-convert-utils.ts", import.meta.url), "utf8");
@@ -128,10 +128,21 @@ test("keeps Bulk SVG Convert on an isolated unlinked development route", () => {
   assert.match(main, /<BulkConvertPage \/>/);
   assert.match(bulkPage, /image\/png,image\/jpeg,image\/webp/);
   assert.match(bulkUtils, /BULK_MAX_FILES = 50/);
-  assert.match(bulkPage, /Hidden development route · not linked from the live site/);
-  assert.doesNotMatch(editor, /\/bulk-convert/);
+  // Deliberate nav exposure, approved for this release: the editor's own
+  // topbar links to Bulk with the exact specified copy.
+  assert.match(editor, /href=\{korean \? "\/bulk-convert\?lang=ko" : "\/bulk-convert"\}>\{korean \? "SVG 일괄 변환" : "Bulk SVG"\}/);
+  // The page no longer calls itself a hidden/unlinked route, since it now
+  // is linked from the live site.
+  assert.doesNotMatch(bulkPage, /Hidden development route/);
+  // Still never linked from the landing page or from Extract Elements --
+  // only the editor's topbar gained this one link, nothing else changed.
   assert.doesNotMatch(landing, /\/bulk-convert/);
   assert.doesNotMatch(extractPage, /\/bulk-convert/);
+  assert.doesNotMatch(extractPage, /Bulk SVG|SVG 일괄 변환/);
+  assert.doesNotMatch(landing, /Bulk SVG|SVG 일괄 변환/);
+  // No other feature (Extract Elements, Stock Tools, Planner, Journal,
+  // Image Generation) was added to the editor's nav alongside it.
+  assert.doesNotMatch(editor, /href="\/extract-elements"|Extract Elements|요소 추출/);
   // Bulk must not import anything from Extract Elements or re-implement
   // its own copy of the SVG engine: only vector-utils.ts and its own
   // sibling files. (Comments are free to mention extract-elements by name
