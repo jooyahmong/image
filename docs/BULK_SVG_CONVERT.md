@@ -13,6 +13,11 @@ content-based filenames/keywords/CSV metadata, donation UI, Smart Extract,
 Planner/Journal, and the Extract Elements E.1/E.2/E.3 export-quality
 experiments (`docs/DECISIONS.md`) -- none of that is imported here.
 
+**Decision: Bulk output is SVG-only in V1.** No PNG/JPG/favicon batch
+export exists or is planned for this version -- the intro copy on
+`/bulk-convert` says so explicitly (see UX below) so this is never a
+surprise discovered only at download time.
+
 ## Architecture
 
 - `app/bulk-convert-utils.ts` -- pure logic: upload validation, job/queue
@@ -146,6 +151,23 @@ converting. "Retry" re-runs one job; "Retry Failed" resets every failed
 job to `queued` and re-runs all of them. A job that's already `done` is
 never reconverted by Convert All, Retry Failed, or a second Convert All
 click (`isBulkJobPending` excludes `done`).
+
+## UX notes
+
+The intro text on `/bulk-convert` states the SVG-only scope directly
+("Bulk conversion currently supports SVG output only." / "현재 일괄 변환은
+SVG 저장만 지원합니다.") inside the existing intro paragraph -- not a
+separate warning banner, no new styling, so it reads as plain scope
+information rather than an alert.
+
+Bulk deliberately has **no** post-download success popup/message (unlike
+the single-image editor's own "Upload another image" notice, added
+separately for that flow). Bulk already shows per-job status and an
+overall progress counter continuously; a batch workflow with up to 50
+files shouldn't be interrupted by a message after every individual
+download or after the ZIP. A regression test
+(`tests/rendered-html.test.mjs`) asserts the single converter's
+success-notice state/copy never appears in `bulk-convert-page.tsx`.
 
 ## Limitations
 

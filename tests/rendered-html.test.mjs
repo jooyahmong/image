@@ -139,3 +139,73 @@ test("keeps Bulk SVG Convert on an isolated unlinked development route", () => {
   assert.doesNotMatch(bulkUtils, /from\s+"\.\/extract-elements/);
   assert.doesNotMatch(bulkPage, /from\s+"\.\/extract-elements/);
 });
+
+test("Bulk Convert's intro clearly states SVG-only output, in both languages, without a loud warning treatment", () => {
+  const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
+  const bulkStyles = readFileSync(new URL("../app/bulk-convert.css", import.meta.url), "utf8");
+  assert.match(bulkPage, /Upload multiple PNG, JPG, JPEG or WebP images and convert them to SVG at once\. Bulk conversion currently supports SVG output only\./);
+  assert.match(bulkPage, /여러 PNG, JPG, JPEG, WebP 이미지를 한 번에 SVG로 변환할 수 있습니다\. 현재 일괄 변환은 SVG 저장만 지원합니다\./);
+  // It lives in the existing intro paragraph, not a new warning-styled
+  // banner element -- no new "alert"/"warning" class was introduced for it.
+  assert.doesNotMatch(bulkPage, /className="bulk-(warning|alert|svg-only)/);
+  assert.doesNotMatch(bulkStyles, /\.bulk-(warning|alert|svg-only)/);
+});
+
+test("a successful SVG download shows a scoped success notice without resetting the current image/result", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  // A dedicated boolean, not the shared exportMessage used by PNG/favicon/
+  // object exports too -- so a PNG or favicon save never implies the SVG
+  // notice, and it can never accumulate into a list/duplicate on repeat
+  // downloads (a single boolean is inherently idempotent).
+  assert.match(page, /const \[svgDownloadSucceeded, setSvgDownloadSucceeded\] = useState\(false\)/);
+  assert.match(page, /if \(status !== "cancelled"\) \{\s*setExportMessage\(status === "saved" \? "SVG saved successfully\." : "SVG download started\."\);\s*setSvgDownloadSucceeded\(true\);/);
+  // exportSvg must never clear source/result/colorCount itself.
+  const exportSvgBody = page.slice(page.indexOf("const exportSvg = useCallback"), page.indexOf("const exportPng = useCallback"));
+  assert.doesNotMatch(exportSvgBody, /setSource\(null\)|setResult\(null\)|setColorCount/);
+});
+
+test("the SVG success notice uses the exact specified copy, an accessible live region, and a keyboard-operable button", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /className="svg-success-notice" role="status" aria-live="polite"/);
+  assert.match(page, /SVG가 저장되었습니다\. 같은 이미지로 계속 작업하거나 다른 이미지를 올릴 수 있습니다\./);
+  assert.match(page, /Your SVG has been downloaded\. Keep working with this image or upload another one\./);
+  assert.match(page, /다른 이미지 올리기/);
+  assert.match(page, /Upload another image/);
+  // A real <button>, not a div/span with a click handler.
+  assert.match(page, /<button className="text-button" type="button" onClick=\{uploadAnotherImage\}>/);
+});
+
+test("'Upload another image' resets the current image/result/crop but preserves SVG converter settings", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const body = page.slice(page.indexOf("const uploadAnotherImage = useCallback"), page.indexOf("const runConversion = useCallback"));
+  assert.match(body, /setOriginalUpload\(null\)/);
+  assert.match(body, /setSource\(null\)/);
+  assert.match(body, /setResult\(null\)/);
+  assert.match(body, /setSvgDownloadSucceeded\(false\)/);
+  assert.match(body, /fileInput\.current\.value = ""/);
+  // Preserved: colorCount, pngScale, language -- none of these setters
+  // appear in the reset body.
+  assert.doesNotMatch(body, /setColorCount/);
+  assert.doesNotMatch(body, /setPngScale/);
+  assert.doesNotMatch(body, /setLanguage/);
+});
+
+test("uploading a new image or starting a new conversion clears any stale SVG success notice", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const acceptFileBody = page.slice(page.indexOf("const acceptFile = useCallback"), page.indexOf("// Only runs when the person explicitly asks"));
+  assert.match(acceptFileBody, /setSvgDownloadSucceeded\(false\)/);
+  const runConversionBody = page.slice(page.indexOf("const runConversion = useCallback"), page.indexOf("const startSourceCropDrag = useCallback"));
+  assert.match(runConversionBody, /setSvgDownloadSucceeded\(false\)/);
+});
+
+test("Bulk download actions never reference the single converter's success-notice state", () => {
+  // The single converter's post-download UX (svgDownloadSucceeded /
+  // "Upload another image") is specific to app/page.tsx and must never
+  // leak into Bulk, which is a separate multi-file flow that shouldn't be
+  // interrupted by a per-file popup.
+  const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(bulkPage, /svgDownloadSucceeded/);
+  assert.doesNotMatch(bulkPage, /svg-success-notice/);
+  assert.doesNotMatch(bulkPage, /Upload another image/);
+  assert.doesNotMatch(bulkPage, /다른 이미지 올리기/);
+});

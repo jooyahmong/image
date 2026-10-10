@@ -174,6 +174,12 @@ export default function Home() {
   const [pngScale, setPngScale] = useState(2);
   const [exportState, setExportState] = useState("");
   const [exportMessage, setExportMessage] = useState("");
+  // Scoped to the SVG download button specifically (not the shared
+  // exportMessage PNG/favicon/object exports also use), so it never
+  // implies a PNG or favicon save also succeeded, and never auto-resets
+  // the current image/result -- it just invites "upload another" without
+  // forcing it.
+  const [svgDownloadSucceeded, setSvgDownloadSucceeded] = useState(false);
   const [brushMode, setBrushMode] = useState(false);
   const [brushTool, setBrushTool] = useState<BrushTool>("protect");
   const [brushSize, setBrushSize] = useState(42);
@@ -259,6 +265,8 @@ export default function Home() {
       setSourceCrop({ x: 0, y: 0, width: loaded.width, height: loaded.height });
       setResult(null);
       setColorEditor(null);
+      setSvgDownloadSucceeded(false);
+      setExportMessage("");
       history.current = [];
       historyIndex.current = -1;
       setHistoryStatus({ index: -1, length: 0 });
@@ -274,6 +282,44 @@ export default function Home() {
     }
   }, []);
 
+  // Only runs when the person explicitly asks for it (the "Upload another
+  // image" button after a successful SVG download) -- never automatically
+  // after a download. Clears the current image/result/crop state back to
+  // the pre-upload screen, but deliberately leaves colorCount, pngScale,
+  // and language alone: those are converter/UI settings, not part of the
+  // image being removed, so the next upload keeps using them.
+  const uploadAnotherImage = useCallback(() => {
+    // Object URL revocation is handled by the existing originalUpload
+    // cleanup effect above, which already runs on every change -- no need
+    // to duplicate it here.
+    setOriginalUpload(null);
+    setSource(null);
+    setResult(null);
+    setFileName("");
+    setError("");
+    setSvgDownloadSucceeded(false);
+    setExportMessage("");
+    setExportState("");
+    setColorEditor(null);
+    setSelectedColors([]);
+    setViewMode("vector");
+    setZoom(100);
+    setPanMode(false);
+    setBrushMode(false);
+    setCropOpen(false);
+    setOriginalFaviconOpen(false);
+    setCrop({ x: 0, y: 0, width: 1, height: 1 });
+    setSourceCrop({ x: 0, y: 0, width: 1, height: 1 });
+    setAutoCropApplied(false);
+    history.current = [];
+    historyIndex.current = -1;
+    setHistoryStatus({ index: -1, length: 0 });
+    protectedMask.current = new Uint8Array();
+    setProtectedCount(0);
+    setMaskRevision((current) => current + 1);
+    if (fileInput.current) fileInput.current.value = "";
+  }, []);
+
   const runConversion = useCallback(async () => {
     if (!source) return;
     setBusy(true);
@@ -286,6 +332,8 @@ export default function Home() {
       setSource(conversionSource);
       setSourceCrop({ x: 0, y: 0, width: conversionSource.width, height: conversionSource.height });
       setResult(converted);
+      setSvgDownloadSucceeded(false);
+      setExportMessage("");
       initialPalette.current = converted.palette.map((color) => ({ ...color }));
       history.current = [];
       historyIndex.current = -1;
@@ -756,7 +804,10 @@ export default function Home() {
     setExportMessage("");
     try {
       const status = await downloadText(cropSvg(result.svg, crop), `${cleanFilename(fileName)}.svg`, "image/svg+xml");
-      if (status !== "cancelled") setExportMessage(status === "saved" ? "SVG saved successfully." : "SVG download started.");
+      if (status !== "cancelled") {
+        setExportMessage(status === "saved" ? "SVG saved successfully." : "SVG download started.");
+        setSvgDownloadSucceeded(true);
+      }
     } catch (caught) {
       setExportMessage(caught instanceof Error ? caught.message : "SVG download failed. Please try again.");
     } finally {
@@ -1158,6 +1209,12 @@ export default function Home() {
                   <p>{Math.round(crop.width * pngScale)} × {Math.round(crop.height * pngScale)} px</p>
                 </div>
                 <div className="download-buttons"><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportSvg()}><Download size={16}/>{exportState === "svg" ? (korean ? "저장 중…" : "Saving…") : "SVG"}</button><button className="primary-download" type="button" disabled={!!exportState} onClick={() => void exportPng()}><Download size={16}/>{exportState === "png" ? (korean ? "렌더링 중…" : "Rendering…") : `PNG ${pngScale}×`}</button><button className="secondary-download" type="button" disabled={!!exportState} onClick={() => void exportFavicon()}><FileImage size={16}/>{exportState === "favicon" ? (korean ? "생성 중…" : "Rendering…") : (korean ? "파비콘" : "Favicon")}</button></div>
+                {svgDownloadSucceeded && (
+                  <div className="svg-success-notice" role="status" aria-live="polite">
+                    <p><Check size={14}/>{korean ? "SVG가 저장되었습니다. 같은 이미지로 계속 작업하거나 다른 이미지를 올릴 수 있습니다." : "Your SVG has been downloaded. Keep working with this image or upload another one."}</p>
+                    <button className="text-button" type="button" onClick={uploadAnotherImage}><UploadCloud size={14}/>{korean ? "다른 이미지 올리기" : "Upload another image"}</button>
+                  </div>
+                )}
                 {separateObjects.length > 1 && (
                   <div className="object-export-panel">
                     <div className="object-export-heading"><div><label className="control-label">Separate objects</label><p>{separateObjects.length} disconnected objects detected. Save each with its own fitted canvas.</p></div><Layers3 size={17}/></div>

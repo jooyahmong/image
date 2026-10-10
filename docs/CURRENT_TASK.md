@@ -306,7 +306,7 @@ automatic filenames, or donation UI yet, as scoped.
   sanitize cases, 2 collision-numbering cases) -- 79 tests total, all
   passing, including every existing Image-to-SVG regression.
 
-## Bulk SVG Convert V1 (not committed yet, on local `feature/bulk-svg-convert`)
+## Bulk SVG Convert V1 (committed locally as `1d16f57` on `feature/bulk-svg-convert`)
 
 New, separate feature: convert many images to SVG at once through the
 existing Image-to-SVG engine, not a new converter. Hidden at `/bulk-convert`
@@ -372,6 +372,57 @@ until explicitly approved for navigation. Full scope/architecture in
 - Full report (pipeline audit, parity proof, queue/ZIP/memory design,
   dependency impact) delivered alongside this update; committed locally
   only to `feature/bulk-svg-convert`, not pushed, not merged to `main`.
+
+## Bulk SVG UX Polish + Single Converter Download UX (not committed yet, on `feature/bulk-svg-convert`)
+
+UX-only follow-up, no new features, no SVG engine changes:
+
+- **Bulk SVG-only notice.** `/bulk-convert`'s existing intro paragraph now
+  states the scope directly in both languages ("Bulk conversion currently
+  supports SVG output only." / "현재 일괄 변환은 SVG 저장만 지원합니다.")
+  -- reusing the same plain, muted paragraph styling that was already
+  there, not a new warning banner. See `docs/BULK_SVG_CONVERT.md`'s new
+  "UX notes" section and decision record.
+- **Single converter: SVG download no longer feels like a dead end.** A
+  new, SVG-download-specific `svgDownloadSucceeded` boolean (deliberately
+  separate from the existing shared `exportMessage` that PNG/favicon/
+  object exports also use) drives a small notice next to the download
+  buttons with the exact specified KO/EN copy, `role="status"
+  aria-live="polite"`, and a real `<button>` ("Upload another image").
+  Nothing is auto-reset on download -- `exportSvg` itself never touches
+  `source`/`result`/`colorCount`.
+- **"Upload another image" reset scope.** New `uploadAnotherImage`
+  handler: clears `originalUpload`/`source`/`result`/`fileName`/crop state/
+  history/brush-protection state back to the pre-upload screen, resets the
+  hidden file input's value, and relies on the *existing* `originalUpload`
+  cleanup `useEffect` (already in the codebase, triggered by
+  `setOriginalUpload(null)`) for object-URL revocation rather than
+  duplicating it. Explicitly preserves `colorCount`, `pngScale`, and
+  `language` -- none of their setters appear in the reset body (test-
+  enforced).
+- **Stale-notice cleanup.** `acceptFile` (new upload) and `runConversion`
+  (new conversion) both now also clear `svgDownloadSucceeded` and
+  `exportMessage`, so a leftover "SVG saved" notice can never survive past
+  a new image or a new conversion of the same image. The notice itself is
+  a single boolean, not a list, so repeat downloads of the same image
+  never stack duplicate UI.
+- **Bulk untouched.** No success popup/message was added to Bulk -- a
+  regression test asserts the single converter's notice state/copy never
+  appears in `bulk-convert-page.tsx`.
+- **Tests**: 6 new in `tests/rendered-html.test.mjs` (Bulk SVG-only copy
+  present in both languages without a new warning class, Bulk never
+  references the single converter's success state, the success notice's
+  state/copy/accessible-button shape, `uploadAnotherImage`'s reset-vs-
+  preserve contract, and `acceptFile`/`runConversion` both clearing the
+  stale notice). 103 tests total, all passing, including every existing
+  Image-to-SVG regression and all 17 Bulk tests (unchanged).
+- No changes to `vector-utils.ts`, `createVectorResult`, `loadRaster`, or
+  any Extract Elements file. No merge/cherry-pick from
+  `experiment/extract-export-quality`.
+- Full report delivered alongside this update; not committed yet --
+  staying local to `feature/bulk-svg-convert` pending sign-off, per
+  instruction (suggested message: `feat: polish bulk and single SVG
+  conversion UX`). Not pushed, not merged, no navigation change.
 
 ## Next (Bulk SVG Convert)
 
