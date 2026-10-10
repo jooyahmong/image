@@ -26,3 +26,8 @@
 - Quick Extract will be completed first.
 - Future Smart Extract may use AI/plugin/API depending on available capabilities.
 - Do not block Quick Extract V1 on Smart Extract research.
+- Extract Elements E.1/E.2/E.3 quality experiments (soft alpha matte, enclosed-background hole punch, boundary fringe cleanup, mask erosion/feather, edge decontamination, Unicode filenames, 1x/2x/4x export, shared SVG helper) are deferred.
+- They must not be included in Bulk SVG Convert work.
+- Bulk SVG Convert is developed from the clean accepted main checkpoint (commit `c98ca80`), not from the experiment branch.
+- Existing production Image-to-SVG pipeline is the source of truth for SVG quality.
+- No merge/cherry-pick from `experiment/extract-export-quality` without explicit user approval.

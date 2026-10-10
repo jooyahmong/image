@@ -115,3 +115,27 @@ test("keeps Extract Elements on an isolated unlinked development route", () => {
   assert.doesNotMatch(editor, /\/extract-elements/);
   assert.doesNotMatch(landing, /\/extract-elements/);
 });
+
+test("keeps Bulk SVG Convert on an isolated unlinked development route", () => {
+  const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
+  const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
+  const bulkUtils = readFileSync(new URL("../app/bulk-convert-utils.ts", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const landing = readFileSync(new URL("../app/landing-page.tsx", import.meta.url), "utf8");
+  const extractPage = readFileSync(new URL("../app/extract-elements-page.tsx", import.meta.url), "utf8");
+
+  assert.match(main, /pathname === "\/bulk-convert"/);
+  assert.match(main, /<BulkConvertPage \/>/);
+  assert.match(bulkPage, /image\/png,image\/jpeg,image\/webp/);
+  assert.match(bulkUtils, /BULK_MAX_FILES = 50/);
+  assert.match(bulkPage, /Hidden development route · not linked from the live site/);
+  assert.doesNotMatch(editor, /\/bulk-convert/);
+  assert.doesNotMatch(landing, /\/bulk-convert/);
+  assert.doesNotMatch(extractPage, /\/bulk-convert/);
+  // Bulk must not import anything from Extract Elements or re-implement
+  // its own copy of the SVG engine: only vector-utils.ts and its own
+  // sibling files. (Comments are free to mention extract-elements by name
+  // to explain the isolation -- only an actual import statement matters.)
+  assert.doesNotMatch(bulkUtils, /from\s+"\.\/extract-elements/);
+  assert.doesNotMatch(bulkPage, /from\s+"\.\/extract-elements/);
+});

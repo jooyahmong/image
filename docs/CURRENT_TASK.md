@@ -6,11 +6,36 @@ WOOJOO Image
 
 ## Current Feature
 
-Extract Elements V1
+Bulk SVG Convert V1 (new, on `feature/bulk-svg-convert`). Extract Elements
+V1 is paused at its accepted Phase E checkpoint (`c98ca80`); its E.1/E.2/E.3
+export-quality experiments are preserved, uncommitted-to-main, on
+`experiment/extract-export-quality` -- see "Branch Split" below.
+
+## Branch Split (handoff safety gate)
+
+A later session found Phase E.1/E.2/E.3 (PNG edge/mask quality, Unicode
+filenames, 1x/2x/4x export, shared SVG helper) sitting uncommitted on `main`
+on top of the accepted `c98ca80` checkpoint, with no other uncommitted or
+unexpected changes. Per instruction, that research is kept but kept out of
+Bulk:
+
+- `experiment/extract-export-quality` -- local-only branch, one commit
+  (`experiment: preserve extract export quality research`) holding exactly
+  the E.1/E.2/E.3 diff (the 9 files: `extract-elements-utils.ts`,
+  `extract-elements-export.ts`, `extract-elements-page.tsx`,
+  `extract-elements-worker.ts`, `extract-elements.css`, `vector-utils.ts`,
+  both test files, and `docs/CURRENT_TASK.md`'s own E.1/E.2/E.3 writeup).
+  Not merged, not cherry-picked, not pushed. Will not be brought back into
+  `main` or `feature/bulk-svg-convert` without explicit user approval (see
+  `docs/DECISIONS.md`).
+- `main` -- reset to exactly `c98ca80` (clean, verified: typecheck/build/79
+  tests all pass at this checkpoint).
+- `feature/bulk-svg-convert` -- branched from clean `main`; all Bulk SVG
+  Convert work happens here. Not merged to `main`, not pushed.
 
 ## Current Repository State
 
-- Branch: `main`
+- Branch: `feature/bulk-svg-convert` (off clean `main` @ `c98ca80`).
 - Working tree at session start: no modified or staged source files; `tests/artifacts/` contains existing untracked SVG diagnostic output and must be preserved.
 - Framework/build: React 19 + TypeScript + Vite 8.
 - Routing: pathname switch in `main.tsx`; `/landing` renders `app/landing-page.tsx`, and all other paths currently render `app/page.tsx`.
@@ -18,7 +43,7 @@ Extract Elements V1
 - Existing Image-to-SVG implementation: upload, crop, palette reduction/editing, background deletion, SVG/PNG/favicon export, and disconnected-object export are implemented.
 - SVG conversion logic: `app/vector-utils.ts`, including `createVectorResult`, object bounds, object extraction, crop, and download helpers.
 - Language handling: English/Korean component copy selected with `?lang=ko`; no i18n library.
-- Downloads/dependencies: direct browser downloads exist; no ZIP library is installed.
+- Downloads/dependencies: direct browser downloads exist; `fflate` (^0.8.3, zero transitive deps) was added for Bulk SVG Convert's ZIP packaging -- see `docs/BULK_SVG_CONVERT.md`.
 - Backend/API: none. The site is built and deployed as static assets.
 - Existing WOOJOO Stock code: none found in this repository.
 
@@ -281,17 +306,94 @@ automatic filenames, or donation UI yet, as scoped.
   sanitize cases, 2 collision-numbering cases) -- 79 tests total, all
   passing, including every existing Image-to-SVG regression.
 
-## Next
+## Bulk SVG Convert V1 (not committed yet, on local `feature/bulk-svg-convert`)
 
-1. Get sign-off on Phase E before deciding whether to commit it (per
-   instruction, not committed yet -- report first).
-2. Real-user QA: run at least 3 real templates through `/extract-elements`
-   before calling Quick Extract production-ready -- (A) a
-   white/transparent asset sheet, (B) a cream/pastel-background asset
-   sheet, (C) a template with some elements close together or merged by
-   Quick Extract -- and this time actually download PNG/JPG/SVG for each
-   to confirm real-browser export matches what the Node-mocked tests
-   predict. Synthetic QA only goes so far.
+New, separate feature: convert many images to SVG at once through the
+existing Image-to-SVG engine, not a new converter. Hidden at `/bulk-convert`
+until explicitly approved for navigation. Full scope/architecture in
+`docs/BULK_SVG_CONVERT.md`.
+
+- **New files, isolated from Extract Elements and from
+  `experiment/extract-export-quality`**: `app/bulk-convert-utils.ts` (pure
+  logic), `app/bulk-convert-page.tsx` (the page), `app/bulk-convert.css`
+  (its own stylesheet). Nothing here imports `extract-elements-*`; a
+  regression test (`tests/rendered-html.test.mjs`) asserts that directly.
+- **Same pipeline, proven not assumed.** `convertBulkFile` calls exactly
+  `loadRaster` then `createVectorResult` from `vector-utils.ts` --
+  unmodified, no wrapper. A test runs one fake file through (A) that same
+  pair of calls directly (what `page.tsx`'s own conversion does for an
+  upload with no interactive crop) and (B) `convertBulkFile`, and asserts
+  byte-identical SVG output. `page.tsx`/`vector-utils.ts` were not touched.
+- **Shared settings.** Only `colorCount` (2-20, default 8) is user-
+  adjustable, matching the single editor's own slider; `cleanup="medium"`
+  and `anchorSimplification=50` are fixed, matching the single editor's own
+  non-adjustable constants -- Bulk invents no new knob the single editor
+  doesn't already have.
+- **Queue.** Bounded worker-pool (`runBulkQueue`), concurrency 2. Per-job
+  `queued -> converting -> done | failed`; one job's failure never stops
+  the batch (caught per-job). Documented honestly in
+  `docs/BULK_SVG_CONVERT.md`: since `createVectorResult` is synchronous and
+  there's no Worker for vectorization (adding one was out of scope),
+  concurrency mainly bounds in-flight decodes, not CPU parallelism that
+  doesn't exist for the trace step.
+- **Filenames.** Fresh, Bulk-only `sanitizeBulkFilenameBase`/
+  `buildBulkSvgFilename` -- a denylist (forbidden/control chars,
+  whitespace), not an ASCII allowlist, so Korean/Unicode names survive.
+  Independently written, not imported from the quarantined experiment.
+  Duplicate numbering matches the main editor's own case-insensitive,
+  case-preserving contract.
+- **ZIP.** New dependency `fflate` (^0.8.3, zero deps of its own) -- no ZIP
+  library existed before. `buildBulkZip` packages only the entries it's
+  handed; the page filters to `selected && done` jobs first. Verified by
+  round-tripping a built ZIP (including a Korean filename) through
+  `unzipSync` in tests. Bundle impact measured: main bundle 388.27 KB
+  (121.54 KB gzip) -> 410.20 KB (129.39 KB gzip) after all of Bulk's code +
+  CSS + fflate together (~7.85 KB gzip combined delta; no per-route
+  code-splitting exists in this project, so this lands in everyone's
+  bundle the same way Extract Elements' own page code already does).
+- **Memory.** `convertBulkFile` returns only `{ svg, width, height }` -- no
+  decoded raster is ever stored past that call, so nothing holds 50
+  rasters in memory regardless of batch size. Thumbnails use
+  `URL.createObjectURL`, not the conversion pipeline. Object URLs are
+  revoked on remove/clear/unmount.
+- **UI.** Upload (drag-drop + picker, multi-file, up to 50), per-row
+  thumbnail/filename/dimensions/status, select/deselect/remove/clear,
+  Convert All / Cancel, Retry / Retry Failed, per-row Download SVG,
+  Download All ZIP, progress counter. Same visual identity (own `--bulk-*`
+  CSS variables mirroring `--extract-*`'s pattern), bilingual EN/KO.
+- **Tests**: 17 new in `tests/bulk-convert.test.mjs` (upload validation x2,
+  job list ops, 4 filename cases, 5 queue cases incl. concurrency bound/
+  failure isolation/retry/selected-only, the real-engine parity test, a
+  memory-shape test, 2 ZIP tests incl. Korean round-trip) plus 1 new in
+  `tests/rendered-html.test.mjs` (route isolation + no Extract Elements
+  import). 97 tests total, all passing, including every existing
+  Image-to-SVG regression and the existing Extract Elements isolation test
+  (unchanged, confirming the accepted main checkpoint's own behavior holds).
+- Full report (pipeline audit, parity proof, queue/ZIP/memory design,
+  dependency impact) delivered alongside this update; committed locally
+  only to `feature/bulk-svg-convert`, not pushed, not merged to `main`.
+
+## Next (Bulk SVG Convert)
+
+1. Get sign-off on Bulk SVG Convert V1 before deciding whether to merge
+   `feature/bulk-svg-convert` into `main` (not merged yet -- report first).
+2. Real-browser QA: upload a real mixed batch (PNG/JPG/WebP, some large,
+   some small, a few over 20 MB or wrong-type to confirm per-file failure
+   isolation), run Convert All, try Cancel mid-batch, Retry a failed file,
+   Retry Failed, download individual SVGs and the ZIP, and open the ZIP in
+   a real unzip tool to confirm Korean filenames display correctly outside
+   of Node's own `unzipSync`.
+3. No per-image settings override exists yet -- confirm that's acceptable
+   for V1 before considering it for a later phase.
+4. Keep `/bulk-convert` hidden until explicitly approved for navigation.
+
+## Next (Extract Elements, paused)
+
+1. Extract Elements E.1/E.2/E.3 sign-off is on hold -- that research lives
+   on `experiment/extract-export-quality`, untouched, pending explicit
+   user approval before any merge back.
+2. Phase E's own real-browser QA (3 real templates, PNG/JPG/SVG download
+   check) is still outstanding whenever Extract Elements resumes.
 3. Decide the semantic-metadata architecture before Phase F filenames and
    Phase G keywords — cards still use placeholder/manually-renamed names,
    no content-based automatic naming.
