@@ -8,22 +8,17 @@
   --bulk-mint: #e9f4ee;
   --bulk-coral: #ef745c;
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 18px 24px 48px;
   background: var(--bulk-paper);
   color: var(--bulk-ink);
   font-family: inherit;
 }
 
-.bulk-topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.bulk-brand img { height: 28px; display: block; }
-.bulk-back { display: inline-flex; align-items: center; gap: 6px; color: var(--bulk-muted); font-weight: 800; font-size: 13px; text-decoration: none; }
-.bulk-privacy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--bulk-muted); font-size: 12.5px; font-weight: 700; }
-.bulk-language { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 800; color: var(--bulk-muted); }
-.bulk-language button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 2px 4px; }
-.bulk-language button.active { color: var(--bulk-green-dark); }
+/* The header itself reuses globals.css's shared .topbar/.topbar-inner/
+   .primary-feature-nav/.privacy-note/.language-switcher (same markup and
+   classes as the single converter), so its full-width background and
+   centered inner container stay in sync with the main editor -- see
+   docs/UI_RULES.md. Only the content below the header is Bulk's own. */
+.bulk-body { width: min(1240px, 92vw); margin: 0 auto; display: flex; flex-direction: column; gap: 18px; padding: 18px 0 48px; }
 
 .bulk-heading { max-width: 720px; }
 .bulk-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--bulk-coral); font-size: 12.5px; font-weight: 900; letter-spacing: .16em; }

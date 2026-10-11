@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowLeft,
   Check,
   Download,
   FileImage,
   FolderArchive,
   Languages,
   Loader2,
-  LockKeyhole,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Trash2,
   UploadCloud,
   X,
@@ -243,19 +242,29 @@ export default function BulkConvertPage() {
 
   return (
     <main className="bulk-page" lang={language}>
-      <header className="bulk-topbar">
-        <a className="bulk-brand" href={language === "ko" ? "/?lang=ko" : "/"} aria-label={content.back}>
-          <img src="/logo.png" alt="WOOJOO Image" />
-        </a>
-        <a className="bulk-back" href={language === "ko" ? "/?lang=ko" : "/"}><ArrowLeft size={17} />{content.back}</a>
-        <div className="bulk-privacy"><LockKeyhole size={16} />{content.privacy}</div>
-        <nav className="bulk-language" aria-label={language === "ko" ? "언어 선택" : "Language selection"}>
-          <button type="button" className={language === "en" ? "active" : ""} onClick={() => changeLanguage("en")}>ENG</button>
-          <span>/</span>
-          <button type="button" className={language === "ko" ? "active" : ""} onClick={() => changeLanguage("ko")}>한국어</button>
-        </nav>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="topbar-brand-group">
+            <a className="brand brand-logo" href={language === "ko" ? "/?lang=ko" : "/"} aria-label={content.back}>
+              <img src="/logo.png" alt="WOOJOO Image" />
+            </a>
+            <nav className="primary-feature-nav" aria-label={language === "ko" ? "주요 기능" : "Primary features"}>
+              <a href={language === "ko" ? "/?lang=ko" : "/"}>{language === "ko" ? "이미지 SVG 변환" : "Image to SVG"}</a>
+              <a href={language === "ko" ? "/bulk-convert?lang=ko" : "/bulk-convert"} aria-current="page" className="active">{language === "ko" ? "SVG 일괄 변환" : "Bulk SVG"}</a>
+            </nav>
+          </div>
+          <div className="topbar-right">
+            <div className="privacy-note"><ShieldCheck size={16} /><span>{content.privacy}</span></div>
+            <nav className="language-switcher" aria-label={language === "ko" ? "언어 선택" : "Language selection"}>
+              <button type="button" className={language === "en" ? "active" : ""} onClick={() => changeLanguage("en")}>ENG</button>
+              <span>/</span>
+              <button type="button" className={language === "ko" ? "active" : ""} onClick={() => changeLanguage("ko")}>한국어</button>
+            </nav>
+          </div>
+        </div>
       </header>
 
+      <div className="bulk-body">
       <section className="bulk-heading">
         <span className="bulk-eyebrow"><Languages size={13} />{content.eyebrow}</span>
         <h1>{content.title}</h1>
@@ -363,6 +372,7 @@ export default function BulkConvertPage() {
       )}
 
       {jobs.length === 0 && <p className="bulk-empty"><RotateCcw size={14} />{content.jobsEmpty}</p>}
+      </div>
     </main>
   );
 }

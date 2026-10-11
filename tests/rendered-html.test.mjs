@@ -151,6 +151,86 @@ test("exposes Bulk SVG Convert in the editor's navigation, while keeping it isol
   assert.doesNotMatch(bulkPage, /from\s+"\.\/extract-elements/);
 });
 
+test("header nav shows both converters with correct KO/EN labels, and marks the current page active on each", () => {
+  const editor = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
+
+  // Single converter page: "Image to SVG" is the active link, "Bulk SVG" is present but not active.
+  assert.match(editor, /aria-current="page" className="active">\{korean \? "이미지 SVG 변환" : "Image to SVG"\}/);
+  assert.match(editor, /href=\{korean \? "\/bulk-convert\?lang=ko" : "\/bulk-convert"\}>\{korean \? "SVG 일괄 변환" : "Bulk SVG"\}/);
+  assert.doesNotMatch(editor, /"\/bulk-convert[^"]*"\}[^<]*aria-current="page"/);
+
+  // Bulk page: "Bulk SVG" is the active link, "Image to SVG" is present but not active.
+  assert.match(bulkPage, /href=\{language === "ko" \? "\/\?lang=ko" : "\/"\}>\{language === "ko" \? "이미지 SVG 변환" : "Image to SVG"\}/);
+  assert.match(bulkPage, /aria-current="page" className="active">\{language === "ko" \? "SVG 일괄 변환" : "Bulk SVG"\}/);
+  assert.doesNotMatch(bulkPage, /href=\{language === "ko" \? "\/\?lang=ko" : "\/"\}>[^<]*aria-current="page"/);
+
+  // Both labels exist in both languages on both pages -- the menu never
+  // disappears or collapses into the logo on either page.
+  for (const source of [editor, bulkPage]) {
+    assert.match(source, /Image to SVG/);
+    assert.match(source, /이미지 SVG 변환/);
+    assert.match(source, /Bulk SVG/);
+    assert.match(source, /SVG 일괄 변환/);
+  }
+});
+
+test("header inner container reuses the exact same centered max-width as main content, not a new width", () => {
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  const headerWidthRule = /\.topbar-inner\s*\{[^}]*width:\s*min\(1240px,\s*92vw\)[^}]*margin:\s*0 auto/;
+  const bodyWidthRules = [
+    /\.workflow-header\s*\{[^}]*width:\s*min\(1240px,\s*92vw\)/,
+    /\.workspace-grid\s*\{[^}]*width:\s*min\(1240px,\s*92vw\)/,
+    /\.site-footer\s*\{[^}]*width:\s*min\(1240px,\s*92vw\)/,
+  ];
+  assert.match(styles, headerWidthRule, "header inner container must use the same width(min(1240px, 92vw)) formula as the body");
+  for (const rule of bodyWidthRules) assert.match(styles, rule);
+  // .topbar itself (the full-width background/border) must NOT carry the
+  // width cap -- only .topbar-inner does.
+  const topbarRule = styles.match(/\.topbar\s*\{[^}]*\}/)?.[0] ?? "";
+  assert.doesNotMatch(topbarRule, /width:\s*min\(/);
+
+  const bulkStyles = readFileSync(new URL("../app/bulk-convert.css", import.meta.url), "utf8");
+  assert.doesNotMatch(bulkStyles, /\.topbar\s*\{/, "Bulk no longer defines its own header style rule -- it reuses globals.css's .topbar/.topbar-inner");
+});
+
+test("both pages share the exact same header markup (.topbar/.topbar-inner/.primary-feature-nav/.topbar-right[.privacy-note+.language-switcher])", () => {
+  const editor = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
+  for (const source of [editor, bulkPage]) {
+    assert.match(source, /<header className="topbar">/);
+    assert.match(source, /<div className="topbar-inner">/);
+    assert.match(source, /<nav className="primary-feature-nav"/);
+    // Privacy badge and language toggle live together in one right-hand
+    // group, not as a separate centered area -- and in that exact order,
+    // so the privacy badge sits immediately to the left of the toggle.
+    const rightGroup = source.match(/<div className="topbar-right">([\s\S]*?)<\/div>\s*<\/div>\s*<\/header>/)?.[1] ?? "";
+    assert.match(rightGroup, /<div className="privacy-note">/);
+    assert.match(rightGroup, /<nav className="language-switcher"/);
+    assert.ok(rightGroup.indexOf('className="privacy-note"') < rightGroup.indexOf('className="language-switcher"'), "privacy-note must come before (visually left of) language-switcher inside topbar-right");
+  }
+});
+
+test("header right group (privacy badge + language toggle) uses a single flex group, not a separate centered area", () => {
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.topbar-inner\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between/);
+  assert.match(styles, /\.topbar-right\s*\{[^}]*display:\s*flex/);
+  // .topbar-inner must not use a 3-column grid with a separate centered
+  // slot for the privacy badge anymore.
+  assert.doesNotMatch(styles.match(/\.topbar-inner\s*\{[^}]*\}/)?.[0] ?? "", /grid-template-columns:\s*1fr auto 1fr/);
+});
+
+test("mobile breakpoint keeps both converter links and the language toggle visible on the first row; privacy badge may wrap to its own row", () => {
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  const mobileBlock = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+  assert.doesNotMatch(mobileBlock.slice(0, 900), /\.primary-feature-nav\s*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(styles, /hamburger|menu-toggle|nav-collapse/i);
+  // The language toggle itself is never pushed to a second row; only the
+  // privacy badge (lowest priority) is allowed to wrap onto its own row.
+  assert.doesNotMatch(mobileBlock.match(/\.language-switcher\s*\{[^}]*\}/)?.[0] ?? "", /order:\s*2|flex:\s*1 1 100%/);
+  assert.match(mobileBlock.match(/\.privacy-note\s*\{[^}]*\}/)?.[0] ?? "", /flex:\s*1 1 100%/);
+});
+
 test("Bulk Convert's intro clearly states SVG-only output, in both languages, without a loud warning treatment", () => {
   const bulkPage = readFileSync(new URL("../app/bulk-convert-page.tsx", import.meta.url), "utf8");
   const bulkStyles = readFileSync(new URL("../app/bulk-convert.css", import.meta.url), "utf8");

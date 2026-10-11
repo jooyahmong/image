@@ -306,6 +306,32 @@ automatic filenames, or donation UI yet, as scoped.
   sanitize cases, 2 collision-numbering cases) -- 79 tests total, all
   passing, including every existing Image-to-SVG regression.
 
+## Header Navigation Cleanup + Git Remote Cleanup + Production Release
+
+Both converters (`Image to SVG` / `이미지 SVG 변환` and `Bulk SVG` / `SVG 일괄
+변환`) are now always shown together in the header, on both pages, with a
+clear active state -- no more guessing what the logo links to. The header's
+inner content (logo+nav on the left, privacy badge + language toggle
+together on the right, privacy immediately left of the toggle, no separate
+centered area) now sits inside the exact same `width: min(1240px, 92vw);
+margin: 0 auto;` container the main content already used
+(`.workflow-header`/`.workspace-grid`/`.site-footer`) -- only `.topbar`
+itself (background/border) stays full-width. Bulk's page dropped its own
+duplicate header styles/markup (`.bulk-topbar` etc.) and now shares
+`page.tsx`'s exact header markup (`.topbar`/`.topbar-inner`/
+`.primary-feature-nav`/`.topbar-right`). On narrow screens both converter
+links and the language toggle stay on the first row; only the privacy
+badge (lowest priority) wraps to its own row. No SVG engine changes; no
+Extract Elements experiment code. This is navigation exposure for the
+already-shipped Bulk feature, which is why it's a layout-only change, not a
+new feature decision.
+
+Git remote cleanup: the real GitHub remote (previously named `github`,
+pointing at `github.com/jooyahmong/image.git`) is now `origin`. The
+previous `origin` (an unfamiliar `git.chatgpt-team.site` host) is preserved,
+renamed to `chatgpt`, not deleted. `origin` is the standing push target
+going forward.
+
 ## Bulk SVG Convert V1 (committed locally as `1d16f57` on `feature/bulk-svg-convert`)
 
 New, separate feature: convert many images to SVG at once through the

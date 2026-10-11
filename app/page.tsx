@@ -906,18 +906,23 @@ export default function Home() {
   return (
     <main className="app-shell" lang={language}>
       <header className="topbar">
-        <div className="topbar-brand-group">
-          <a className="brand brand-logo" href="#" aria-label="WOOJOO Image home"><img src="/logo.png" alt="WOOJOO Image" /></a>
-          <nav className="primary-feature-nav" aria-label={korean ? "주요 기능" : "Primary features"}>
-            <a href={korean ? "/bulk-convert?lang=ko" : "/bulk-convert"}>{korean ? "SVG 일괄 변환" : "Bulk SVG"}</a>
-          </nav>
+        <div className="topbar-inner">
+          <div className="topbar-brand-group">
+            <a className="brand brand-logo" href="#" aria-label="WOOJOO Image home"><img src="/logo.png" alt="WOOJOO Image" /></a>
+            <nav className="primary-feature-nav" aria-label={korean ? "주요 기능" : "Primary features"}>
+              <a href={korean ? "/?lang=ko" : "/"} aria-current="page" className="active">{korean ? "이미지 SVG 변환" : "Image to SVG"}</a>
+              <a href={korean ? "/bulk-convert?lang=ko" : "/bulk-convert"}>{korean ? "SVG 일괄 변환" : "Bulk SVG"}</a>
+            </nav>
+          </div>
+          <div className="topbar-right">
+            <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>
+            <nav className="language-switcher" aria-label="Language selection">
+              <button type="button" className={!korean ? "active" : ""} onClick={() => setSiteLanguage("en")}>ENG</button>
+              <span>/</span>
+              <button type="button" className={korean ? "active" : ""} onClick={() => setSiteLanguage("ko")}>한국어</button>
+            </nav>
+          </div>
         </div>
-        <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>
-        <nav className="language-switcher" aria-label="Language selection">
-          <button type="button" className={!korean ? "active" : ""} onClick={() => setSiteLanguage("en")}>ENG</button>
-          <span>/</span>
-          <button type="button" className={korean ? "active" : ""} onClick={() => setSiteLanguage("ko")}>한국어</button>
-        </nav>
       </header>
 
       <section className="workflow-header">
