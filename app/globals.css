@@ -40,24 +40,39 @@ button { color: inherit; }
   background: rgba(255,255,255,.8);
   backdrop-filter: blur(12px);
 }
+/* Three columns, left/right equal (1fr) so the nav in the middle (auto,
+   content-sized) lands visually centered -- logo stays left, privacy+
+   language stay right, same pattern already proven for this header. */
 .topbar-inner {
   width: min(1240px, 92vw);
   height: 100%;
   margin: 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 24px;
 }
-.topbar-brand-group { display: flex; align-items: center; gap: 20px; min-width: 0; }
 /* Privacy badge sits immediately to the left of the language toggle, both
    inside this one right-hand group -- not a separate centered area. */
-.topbar-right { display: flex; align-items: center; gap: 14px; flex: none; }
-.primary-feature-nav { display: flex; align-items: center; gap: 14px; }
-.primary-feature-nav a { color: var(--ink); font-size: 13.5px; font-weight: 750; text-decoration: none; opacity: .78; white-space: nowrap; padding-bottom: 2px; border-bottom: 2px solid transparent; }
-.primary-feature-nav a:hover, .primary-feature-nav a:focus-visible { opacity: 1; color: var(--green); }
-.primary-feature-nav a.active { opacity: 1; color: var(--green-dark); font-weight: 800; border-bottom-color: var(--green); }
-.brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 800; letter-spacing: -.02em; }
+.topbar-right { display: flex; align-items: center; gap: 14px; justify-self: end; }
+.primary-feature-nav { display: flex; align-items: center; gap: 8px; justify-self: center; background: #f3f5f1; padding: 4px; border-radius: 13px; }
+.primary-feature-nav a {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.primary-feature-nav a:hover, .primary-feature-nav a:focus-visible { color: var(--green-dark); background: rgba(37,115,91,.08); }
+.primary-feature-nav a.active { color: var(--green-dark); background: var(--mint); font-weight: 750; border-bottom-color: var(--green); }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 800; letter-spacing: -.02em; justify-self: start; min-width: 0; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; color: #fff; background: var(--green); transform: rotate(-3deg); }
 .brand-mark img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; transform: rotate(3deg); }
 .brand-logo { display: block; height: 38px; }
@@ -326,10 +341,28 @@ button { color: inherit; }
 .original-favicon-content .download-buttons { grid-template-columns: 1fr; margin-top: 12px; }
 .download-message { margin: 10px 0 0; padding: 8px 9px; border-radius: 7px; color: #356b54; background: #edf8f2; font-size: 10.8px; font-weight: 750; }
 .download-message.error { color: #a33c2b; background: #fff0eb; }
-.svg-success-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding: 9px 11px; border-radius: 8px; background: #edf8f2; }
+.svg-success-notice { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; padding: 11px 13px; border-radius: 10px; background: #edf8f2; }
 .svg-success-notice p { display: flex; align-items: center; gap: 6px; margin: 0; color: #356b54; font-size: 11.5px; font-weight: 700; line-height: 1.4; }
 .svg-success-notice p svg { flex: none; }
-.svg-success-notice .text-button { font-size: 12px; font-weight: 800; white-space: nowrap; }
+/* A real secondary button, not a text link -- same tone as the existing
+   .secondary-download button (border + brand green), content-sized so it
+   doesn't stretch across the whole notice. */
+.upload-another-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border: 1px solid #a9c8ba;
+  border-radius: 9px;
+  color: var(--green-dark);
+  background: #fff;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.upload-another-button:hover { background: var(--mint); }
+.upload-another-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .object-export-panel { margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--line); }
 .object-export-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .object-export-heading p { max-width: 230px; margin: 5px 0 0; color: #839089; font-size: 9.6px; line-height: 1.45; }
@@ -357,15 +390,18 @@ button { color: inherit; }
 }
 @media (max-width: 640px) {
   .topbar { height: auto; }
-  .topbar-inner { padding: 12px 0; flex-wrap: wrap; row-gap: 8px; }
+  /* Row 1: logo (left) + privacy/language (right). Row 2: both converter
+     tabs, centered, full width -- always visible, never collapsed away. */
+  .topbar-inner { padding: 12px 0; grid-template-columns: 1fr auto; row-gap: 10px; }
+  .svg-success-notice { align-items: stretch; }
+  .upload-another-button { justify-content: center; width: 100%; }
   .brand em { display: none; }
   .brand-logo { height: 26px; }
-  .topbar-brand-group { gap: 10px; }
-  .primary-feature-nav { gap: 8px; }
-  .primary-feature-nav a { font-size: 11px; }
-  /* Language toggle stays on the first row, right-aligned; the privacy
-     badge (lowest priority) wraps onto its own full-width second row
-     instead of competing for first-row space. */
+  .primary-feature-nav { grid-column: 1 / -1; grid-row: 2; justify-self: center; gap: 6px; padding: 3px; }
+  .primary-feature-nav a { height: 36px; padding: 0 12px; font-size: 12.5px; }
+  /* Language toggle stays on row 1, right-aligned; the privacy badge
+     (lowest priority) wraps onto its own full-width row instead of
+     competing with it for space. */
   .topbar-right { flex-wrap: wrap; justify-content: flex-end; gap: 6px 10px; }
   .privacy-note { order: 2; flex: 1 1 100%; justify-content: flex-end; font-size: 10px; padding: 5px 9px; }
   .language-switcher { font-size: 9.6px; padding: 6px 8px; }

@@ -244,15 +244,13 @@ export default function BulkConvertPage() {
     <main className="bulk-page" lang={language}>
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="topbar-brand-group">
-            <a className="brand brand-logo" href={language === "ko" ? "/?lang=ko" : "/"} aria-label={content.back}>
-              <img src="/logo.png" alt="WOOJOO Image" />
-            </a>
-            <nav className="primary-feature-nav" aria-label={language === "ko" ? "주요 기능" : "Primary features"}>
-              <a href={language === "ko" ? "/?lang=ko" : "/"}>{language === "ko" ? "이미지 SVG 변환" : "Image to SVG"}</a>
-              <a href={language === "ko" ? "/bulk-convert?lang=ko" : "/bulk-convert"} aria-current="page" className="active">{language === "ko" ? "SVG 일괄 변환" : "Bulk SVG"}</a>
-            </nav>
-          </div>
+          <a className="brand brand-logo" href={language === "ko" ? "/?lang=ko" : "/"} aria-label={content.back}>
+            <img src="/logo.png" alt="WOOJOO Image" />
+          </a>
+          <nav className="primary-feature-nav" aria-label={language === "ko" ? "주요 기능" : "Primary features"}>
+            <a href={language === "ko" ? "/?lang=ko" : "/"}>{language === "ko" ? "이미지 SVG 변환" : "Image to SVG"}</a>
+            <a href={language === "ko" ? "/bulk-convert?lang=ko" : "/bulk-convert"} aria-current="page" className="active">{language === "ko" ? "SVG 일괄 변환" : "Bulk SVG"}</a>
+          </nav>
           <div className="topbar-right">
             <div className="privacy-note"><ShieldCheck size={16} /><span>{content.privacy}</span></div>
             <nav className="language-switcher" aria-label={language === "ko" ? "언어 선택" : "Language selection"}>

@@ -907,13 +907,11 @@ export default function Home() {
     <main className="app-shell" lang={language}>
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="topbar-brand-group">
-            <a className="brand brand-logo" href="#" aria-label="WOOJOO Image home"><img src="/logo.png" alt="WOOJOO Image" /></a>
-            <nav className="primary-feature-nav" aria-label={korean ? "주요 기능" : "Primary features"}>
-              <a href={korean ? "/?lang=ko" : "/"} aria-current="page" className="active">{korean ? "이미지 SVG 변환" : "Image to SVG"}</a>
-              <a href={korean ? "/bulk-convert?lang=ko" : "/bulk-convert"}>{korean ? "SVG 일괄 변환" : "Bulk SVG"}</a>
-            </nav>
-          </div>
+          <a className="brand brand-logo" href="#" aria-label="WOOJOO Image home"><img src="/logo.png" alt="WOOJOO Image" /></a>
+          <nav className="primary-feature-nav" aria-label={korean ? "주요 기능" : "Primary features"}>
+            <a href={korean ? "/?lang=ko" : "/"} aria-current="page" className="active">{korean ? "이미지 SVG 변환" : "Image to SVG"}</a>
+            <a href={korean ? "/bulk-convert?lang=ko" : "/bulk-convert"}>{korean ? "SVG 일괄 변환" : "Bulk SVG"}</a>
+          </nav>
           <div className="topbar-right">
             <div className="privacy-note"><ShieldCheck size={16} /><span>{korean ? "이미지는 이 기기 안에만 머뭅니다" : "Your image stays on this device"}</span></div>
             <nav className="language-switcher" aria-label="Language selection">
@@ -1222,7 +1220,7 @@ export default function Home() {
                 {svgDownloadSucceeded && (
                   <div className="svg-success-notice" role="status" aria-live="polite">
                     <p><Check size={14}/>{korean ? "SVG가 저장되었습니다. 같은 이미지로 계속 작업하거나 다른 이미지를 올릴 수 있습니다." : "Your SVG has been downloaded. Keep working with this image or upload another one."}</p>
-                    <button className="text-button" type="button" onClick={uploadAnotherImage}><UploadCloud size={14}/>{korean ? "다른 이미지 올리기" : "Upload another image"}</button>
+                    <button className="upload-another-button" type="button" onClick={uploadAnotherImage}><UploadCloud size={14}/>{korean ? "다른 이미지 올리기" : "Upload another image"}</button>
                   </div>
                 )}
                 {separateObjects.length > 1 && (

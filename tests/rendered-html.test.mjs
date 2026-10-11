@@ -211,13 +211,15 @@ test("both pages share the exact same header markup (.topbar/.topbar-inner/.prim
   }
 });
 
-test("header right group (privacy badge + language toggle) uses a single flex group, not a separate centered area", () => {
+test("nav sits in the visually centered middle column; privacy badge + language toggle share one right-hand group, not a separate area of their own", () => {
   const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(styles, /\.topbar-inner\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between/);
+  // Logo (left) / nav (center) / topbar-right (right) are the grid's three
+  // children -- left and right columns equal (1fr) so the middle
+  // (content-sized) column lands visually centered.
+  assert.match(styles, /\.topbar-inner\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1fr auto 1fr/);
+  assert.match(styles, /\.primary-feature-nav\s*\{[^}]*justify-self:\s*center/);
   assert.match(styles, /\.topbar-right\s*\{[^}]*display:\s*flex/);
-  // .topbar-inner must not use a 3-column grid with a separate centered
-  // slot for the privacy badge anymore.
-  assert.doesNotMatch(styles.match(/\.topbar-inner\s*\{[^}]*\}/)?.[0] ?? "", /grid-template-columns:\s*1fr auto 1fr/);
+  assert.match(styles, /\.topbar-right\s*\{[^}]*justify-self:\s*end/);
 });
 
 test("mobile breakpoint keeps both converter links and the language toggle visible on the first row; privacy badge may wrap to its own row", () => {
@@ -262,8 +264,11 @@ test("the SVG success notice uses the exact specified copy, an accessible live r
   assert.match(page, /Your SVG has been downloaded\. Keep working with this image or upload another one\./);
   assert.match(page, /다른 이미지 올리기/);
   assert.match(page, /Upload another image/);
-  // A real <button>, not a div/span with a click handler.
-  assert.match(page, /<button className="text-button" type="button" onClick=\{uploadAnotherImage\}>/);
+  // A real <button> styled as a visible secondary button, not a text link.
+  assert.match(page, /<button className="upload-another-button" type="button" onClick=\{uploadAnotherImage\}>/);
+  const styles = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.upload-another-button\s*\{[^}]*border:\s*1px solid/, "a real bordered button, not a bare text link");
+  assert.match(styles, /\.upload-another-button:focus-visible\s*\{[^}]*outline/, "keeps a visible focus ring");
 });
 
 test("'Upload another image' resets the current image/result/crop but preserves SVG converter settings", () => {
