@@ -330,7 +330,18 @@ Git remote cleanup: the real GitHub remote (previously named `github`,
 pointing at `github.com/jooyahmong/image.git`) is now `origin`. The
 previous `origin` (an unfamiliar `git.chatgpt-team.site` host) is preserved,
 renamed to `chatgpt`, not deleted. `origin` is the standing push target
-going forward.
+going forward. `main`'s upstream tracking branch was re-pointed to
+`origin/main`.
+
+**Follow-up polish** (`0c28ddc`): the nav moved from next to the logo into
+the header's visual center (logo left / nav center / privacy+language
+right, same `1fr auto 1fr` grid pattern as before, just with the content
+swapped), restyled as a real tab group (taller tappable area, light
+brand-tint `--mint` background, bottom border in `--green` on the active
+tab) instead of plain underlined links. "Upload another image" became a
+real bordered secondary button (same tone as `.secondary-download`)
+instead of a text link. Mobile: the tab group drops to its own centered
+row below the logo/language row, privacy badge still lowest priority.
 
 ## Bulk SVG Convert V1 (committed locally as `1d16f57` on `feature/bulk-svg-convert`)
 
